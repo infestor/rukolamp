@@ -17,7 +17,7 @@ CFLAGS+=" -fwhole-program"
 CFLAGS+=" -Wl,--gc-sections -fdata-sections -ffunction-sections"
 CFLAGS+=" -Wl,--relax"
 
-avr-c++ -mmcu=$MCU $CFLAGS rukolamp.cpp -o rukolamp.elf
+avr-c++ -mmcu=$MCU $CFLAGS rukolamp.c -o rukolamp.elf
 
 avr-objcopy -O ihex -R .eeprom -R .fuse -R .lock -R .signature rukolamp.elf rukolamp.hex
 avr-size --mcu=$MCU --format=avr rukolamp.elf

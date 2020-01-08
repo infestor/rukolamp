@@ -1,7 +1,16 @@
 /*
  */
 // Choose your MCU here, or in the build script
+#define ATTINY 13
+#define NANJG_LAYOUT
 #define __AVR_ATtiny13A__
+
+#include <avr/io.h>
+#include <avr/pgmspace.h>
+#include <avr/interrupt.h>
+#include <avr/eeprom.h>
+#include <avr/sleep.h>
+#include <string.h>
 
 #define F_CPU 4800000UL
 #define EEPSIZE 64
@@ -56,8 +65,8 @@
 #define MODE_BIKE 3
 #define LAST_NORMAL_MODE_ID MODE_BIKE
 
-#define CONFIGURATION_MODE LAST_NORMAL_MODE + 1
-#define GROUP_SELECT_MODE CONFIGURATION_MODE + 1
+#define CONFIGURATION_MODE_ID LAST_NORMAL_MODE_ID + 1
+#define GROUP_SELECT_MODE CONFIGURATION_MODE_ID + 1
 
 #define CONFIG_BLINK_BRIGHTNESS	2 // output to use for blinks on battery check (and other modes) = 10%
 #define CONFIG_BLINK_SPEED		 750 // ms per normal-speed blink
@@ -77,13 +86,6 @@
 
 // Ignore a spurious warning, we did the cast on purpose
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
-
-#include <avr/io.h>
-#include <avr/pgmspace.h>
-#include <avr/interrupt.h>
-#include <avr/eeprom.h>
-#include <avr/sleep.h>
-#include <string.h>
 
 #define OWN_DELAY		   // Don't use stock delay functions.
 #define USE_DELAY_MS	 // use _delay_ms()
@@ -168,7 +170,7 @@ inline void count_num_levels_for_mode(uint8_t target_group) {
 			if (group > target_group) break;
 		} 
 		// else if we're in the right group, store the mode and increase the mode count
-		else if (group == target_group { 
+		else if (group == target_group) { 
 			mc++; 
 		} 
 	}
@@ -235,7 +237,7 @@ int main(void)
 			next_mode(); // Will handle wrap arounds
 		} else { // Long press, keep the same mode
 			reset_fast_presses();
-			if( !memory_is_enabled() ) {actual_level_id = 0;}  // if memory is turned off, set actual_level_id to 0
+			//if( !memory_is_enabled() ) {actual_level_id = 0;}  // if memory is turned off, set actual_level_id to 0
 		}
 	}
 
@@ -250,8 +252,8 @@ int main(void)
 	uint8_t lowbatt_cnt = 0;
 	uint8_t voltage;
 
-	if(actual_level_id > num_available_levels) { output = actual_level_id; }  // special modes, override output
-	else { output = available_levels[actual_level_id]; }
+	if(actual_level_id > num_available_levels) { actual_pwm_output = actual_level_id; }  // special modes, override output
+	else { actual_pwm_output = 0; }//read from progmem : available_levels[actual_level_id]; }
 	
 	while(1) {
 		if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
@@ -260,7 +262,7 @@ int main(void)
 
 			// Enter into configuration
 		}
-		else if (output == MODE_STROBE) {
+		else if (actual_pwm_output == STROBE) {
 			for(i=0;i<8;i++) {
 				set_level(PWM_RAMP_SIZE);
 				_delay_ms(33);
@@ -268,32 +270,33 @@ int main(void)
 				_delay_ms(67);
 			}
 		}
-		else if (output == MODE_BEACON) {
+		else if (actual_pwm_output == BEACON) {
 			set_level(PWM_RAMP_SIZE);
 			_delay_ms(10);
 			set_output_pwm(0);
 			_delay_s(); _delay_s();
 		}
-		else if (output == BATT_CHECK) {
+		else if (actual_pwm_output == BATT_CHECK) {
 			 blink(battcheck(), CONFIG_BLINK_SPEED/4);
 			 _delay_s(); _delay_s();
 		}
-		else if (output == GROUP_SELECT_MODE) {
+		else if (actual_pwm_output == GROUP_SELECT_MODE) {
 			actual_level_id = 0; // exit this mode after one use
 
 			for(i=0; i<NUM_LEVEL_GROUPS; i++) {
-				toggle_options(((config & 0b11110000) | i), i+1);
+				// maybe do something
+				//toggle_options(((config & 0b11110000) | i), i+1);
 			}
 			_delay_s();
 		}
 		else {
-			if ((output == ID_TURBO) && ( ttimer_is_enabled() ) && (ticks > (TURBO_MINUTES * TICKS_PER_MINUTE))) {
+			if ((actual_level_id == ID_TURBO) && (ticks > (TURBO_MINUTES * TICKS_PER_MINUTE))) {
 				if (adj_output > TURBO_LOWER) { adj_output = adj_output - 2; }
 				set_output_pwm(adj_output);
 			}
 			else {
 				ticks ++; // count ticks for turbo timer
-				set_level(output);
+				set_level(actual_pwm_output);
 			}
 
 			_delay_ms(500);  // Otherwise, just sleep.
@@ -314,16 +317,16 @@ int main(void)
 			if (lowbatt_cnt >= 8) {  // See if it's been low for a while, and maybe step down
 				//set_output_pwm(0);  _delay_ms(100); // blink on step-down:
 
-				if (output > PWM_RAMP_SIZE) {  // blinky modes
-					output = PWM_RAMP_SIZE / 2; // step down from blinky modes to medium
-				} else if (output > 1) {  // regular solid mode
-					output = output - 1; // step down from solid modes somewhat gradually
+				if (actual_pwm_output > PWM_RAMP_SIZE) {  // blinky modes
+					actual_pwm_output = PWM_RAMP_SIZE / 2; // step down from blinky modes to medium
+				} else if (actual_pwm_output > 1) {  // regular solid mode
+					actual_pwm_output = actual_pwm_output - 1; // step down from solid modes somewhat gradually
 				} else { // Already at the lowest mode
 					set_output_pwm(0); // Turn off the light
 					set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Power down as many components as possible
 					sleep_mode();
 				}
-				set_level(output);
+				set_level(actual_pwm_output);
 				lowbatt_cnt = 0;
 				_delay_s(); // Wait before lowering the level again
 			}
