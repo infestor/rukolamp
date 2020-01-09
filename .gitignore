@@ -4,4 +4,9 @@
 Debug/
 *.swp
 *~
-
+*.elf
+*.hex
+*.lss
+*.o
+*.a
+*.obj

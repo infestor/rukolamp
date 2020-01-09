@@ -133,8 +133,8 @@ inline uint8_t config_memory_is_enabled()  { return (config >> 4) & 0b00000001; 
 
 inline uint8_t status_mode()     { return (status     ) & 0b00000011; }
 inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
-inline set_status_mode(uint8_t new_mode)      { status = (new_mode & 0b00000011); } // TODO
-inline set_status_level_id(uint8_t new_level) { status = ((new_level & 0b00001111) << 2); } // TODO
+inline void set_status_mode(uint8_t new_mode)      { status = (new_mode & 0b00000011); } // TODO
+inline void set_status_level_id(uint8_t new_level) { status = ((new_level & 0b00001111) << 2); } // TODO
 
 int main(void) __attribute__((OS_main));
 
