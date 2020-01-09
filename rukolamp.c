@@ -51,7 +51,7 @@
 #define PWM_RAMP_SIZE  8
 #define PWM_RAMP_VALUES   5, 26, 64, 85, 128, 169, 192, 255  // 1, 10, 25, 33, 50, 66, 75, 100%
 #define FINE_RAMP_SIZE 16
-#define FINE_RAMP_VALUES //by 1/16th of 100%
+#define FINE_RAMP_VALUES 5, 15, 26, 39, 55, 74, 91, 104, 120, 134, 145, 157, 172, 197, 225, 255 //by 1/16th of 100%
 
 // These need to be in sequential order, and numbered from 0, no gaps.
 // Make sure to update FIRST_BLINKY and LAST_BLINKY as needed.
@@ -103,6 +103,8 @@ PROGMEM const uint8_t blinky_mode_list[] = { BLINKY_BATT_CHECK, BLINKY_STROBE, B
 // Modes (gets set when the light starts up based on saved config values)
 PROGMEM const uint8_t pwm_ramp_values[]  = { PWM_RAMP_VALUES };
 
+PROGMEM const uint8_t pwm_fine_ramp_values[] = { FINE_RAMP_VALUES };
+
 #define NUM_LEVEL_GROUPS 8 // Can define up to 16 groups, theoretically the group can have up to 16 level entries
 PROGMEM const uint8_t level_groups[] = {
 	1, 2, 4, 5, 7, 8, 0,
@@ -124,7 +126,7 @@ register uint8_t config asm("r9");
 register uint8_t status asm("r10");
 
 //uint8_t available_levels[LONGEST_LEVEL_GROUP];
-uint8_t num_available_levels;
+//uint8_t num_available_levels;
 
 // =========================================================================
 
@@ -133,8 +135,8 @@ inline uint8_t config_memory_is_enabled()  { return (config >> 4) & 0b00000001; 
 
 inline uint8_t status_mode()     { return (status     ) & 0b00000011; }
 inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
-inline void set_status_mode(uint8_t new_mode)      { status = (new_mode & 0b00000011); } // TODO
-inline void set_status_level_id(uint8_t new_level) { status = ((new_level & 0b00001111) << 2); } // TODO
+inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
+inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
 int main(void) __attribute__((OS_main));
 
@@ -146,28 +148,9 @@ inline void ResetState() {
 	actual_level_id = status_level_id();
 }
 
-inline void CountNumLevelsForGroup(uint8_t target_group) {
-	uint8_t group = 0, mode, i, mc=0;
-	const uint8_t *src = level_groups;
-
-	for(i = 0; i < sizeof(level_groups); i++) {
-		mode = pgm_read_byte(src + i);
-		// if we hit a 0, that means we're moving on to the next group
-		if (mode == 0) {
-			group++; 
-			if (group > target_group) break;
-		} 
-		// else if we're in the right group, store the mode and increase the mode count
-		else if (group == target_group) { 
-			mc++; 
-		} 
-	}
-
-	num_available_levels = mc;
-}
-
 inline void SetOutputPwm(uint8_t pwm1) {
 	PWM_LVL = pwm1;
+	actual_pwm_output = pwm1;
 }
 
 void SetLevel(uint8_t level_id) {
@@ -204,8 +187,37 @@ void ResetFastPresses() {
 	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
 }
 
+uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode) {
+	uint8_t group = 0, level, i, mc=0;
+	const uint8_t *src = level_groups;
+
+	if ((target_mode == MODE_NORMAL) || (target_mode == MODE_BIKE)) {
+		for(i = 0; i < sizeof(level_groups); i++) {
+			level = pgm_read_byte(src + i);
+			// if we hit a 0, that means we're moving on to the next group
+			if (level == 0) {
+				group++;
+				if (group > target_group) break;
+			}
+			// else if we're in the right group, store the mode and increase the mode count
+			else if (group == target_group) {
+				mc++;
+			}
+		}
+	}
+	else if (target_mode == MODE_BLINKY) {
+		mc = LAST_BLINKY; //for blinky mode - levels are in fact blinkies
+	}
+	else if (target_mode == MODE_RAMPING) {
+		mc = FINE_RAMP_SIZE;
+	}
+
+	return mc;
+}
+
 inline void NextLevel() {
 	if (actual_mode != MODE_RAMPING) {
+		uint8_t num_available_levels = CountNumLevelsForGroupAndMode(config_level_group_number(), actual_mode);
 		actual_level_id++;
 		// if we hit the end of list, go to first
 		if (actual_level_id == num_available_levels) {
@@ -221,8 +233,8 @@ inline void NextMode() {
 	// go to next mode
 	actual_mode++;
 	if (actual_mode > LAST_NORMAL_MODE_ID) actual_mode = MODE_NORMAL;
-	actual_level_id = 0;
 	set_status_mode(actual_mode);
+	actual_level_id = 0;
 	set_status_level_id(0);
 }
 
@@ -256,16 +268,12 @@ int main(void)
 		ResetState(); // Read config values and saved state / or use defaults
 	}
 
-	CountNumLevelsForGroup(config_level_group_number());
-
     //TURBO ramp down
-	uint8_t i = 0;
 	uint16_t ticks = 0;
 	uint8_t adj_output = 255;
 
     // VOLTAGE_MON
 	uint8_t lowbatt_cnt = 0;
-	uint8_t voltage;
 
 	//if(actual_level_id > num_available_levels) { actual_pwm_output = actual_level_id; }  // special modes, override output
 	//else { actual_pwm_output = 0; }//read from progmem : available_levels[actual_level_id]; }
@@ -282,7 +290,7 @@ int main(void)
 		else if (actual_mode == MODE_BLINKY)
 		{
 			if (actual_level_id == BLINKY_STROBE) {
-				for(i = 0; i < 7; i++) {
+				for(uint8_t i = 0; i < 7; i++) {
 					SetLevel(ID_TURBO);
 					_delay_ms(10);
 					SetOutputPwm(0);
@@ -317,12 +325,23 @@ int main(void)
 				}
 				else {
 					ticks++; // count ticks for turbo timer
-					SetLevel(actual_level_id);
 				}
+
+				SetLevel(actual_level_id);
+
 			}
 			else // Definitely has to be MODE_BIKE
 			{
-
+					SetLevel(actual_level_id);
+					_delay_s();
+					_delay_s();
+					SetLevel(ID_TURBO);
+					_delay_ms(10);
+					SetLevel(actual_level_id);
+					_delay_ms(150);
+					SetLevel(ID_TURBO);
+					_delay_ms(10);
+					SetLevel(actual_level_id);
 			}
 
 			_delay_ms(500);  // Otherwise, just sleep.
@@ -332,7 +351,7 @@ int main(void)
 
 		// Battery undervoltage protection
 		if (ADCSRA & (1 << ADIF)) {  // if a voltage reading is ready
-			voltage = ADCH;  // get the waiting value
+			uint8_t voltage = ADCH;  // get the waiting value
 
 			if (voltage < ADC_LOW) { // See if voltage is lower than what we were looking for
 				lowbatt_cnt ++;
@@ -343,10 +362,9 @@ int main(void)
 			if (lowbatt_cnt >= 8) {  // See if it's been low for a while, and maybe step down
 				//SetOutputPwm(0);  _delay_ms(100); // blink on step-down:
 
-				if (actual_mode > MODE_BLINKY) {  // blinky modes
-					actual_pwm_output = PWM_RAMP_SIZE / 2; // step down from blinky modes to medium
-				} else if (actual_mode == MODE_NORMAL) {  // regular solid mode
-					actual_pwm_output = actual_pwm_output - 1; // step down from solid modes somewhat gradually
+				//uint8_t new
+				actual_pwm_output = actual_pwm_output - 1; // step down from solid modes somewhat gradually
+
 				} else { // Already at the lowest mode
 					SetOutputPwm(0); // Turn off the light
 					set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Power down as many components as possible
