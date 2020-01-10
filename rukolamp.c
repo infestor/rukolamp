@@ -10,6 +10,8 @@
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
 #include <avr/sleep.h>
+#include <avr/wdt.h>
+
 #include <string.h>
 
 #define F_CPU 4800000UL
@@ -122,8 +124,8 @@ const uint8_t level_groups[] PROGMEM __attribute__((used)) = {
 register uint8_t actual_level_id asm("r6");
 register uint8_t actual_mode asm("r7");
 register uint8_t actual_pwm_output asm("r8");
-volatile register uint8_t config asm("r9");
-volatile register uint8_t status asm("r10");
+register uint8_t config asm("r9");
+register uint8_t status asm("r10");
 
 //uint8_t available_levels[LONGEST_LEVEL_GROUP];
 //uint8_t num_available_levels;
@@ -138,14 +140,29 @@ inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
 inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
 inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
-
-ISR(BADISR_vect) { //just for case
-  __asm__("nop\n\t");
+inline uint8_t WeDidAFastPress() {
+	uint8_t i;
+	for(i = 0; i < NUM_FP_BYTES-1; i++) { if(fast_presses[i] != fast_presses[i+1]) return 0;}
+	return 1;
 }
 
-ISR(WDT_vect)
+inline void IncrementFastPresses() {
+	uint8_t i;
+	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i]++; }
+}
+
+void ResetFastPresses() {
+	uint8_t i;
+	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
+}
+
+EMPTY_INTERRUPT(BADISR_vect); //just for case
+
+ISR(WDT_vect, ISR_NAKED)
 {
-  __asm__("nop\n\t");
+	ResetFastPresses();
+	//turn off watchog (we already had our 1sec)
+	WDTCR = 0;
 }
 
 inline void ResetState() {
@@ -179,25 +196,8 @@ void blink(uint8_t val, uint16_t speed)
 	}
 }
 
-inline uint8_t WeDidAFastPress() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES-1; i++) { if(fast_presses[i] != fast_presses[i+1]) return 0;}
-	return 1;
-}
-
-inline void IncrementFastPresses() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i]++; }
-}
-
-void ResetFastPresses() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
-}
-
 uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode) {
 	uint8_t group = 0, level, i, mc=0;
-	const uint8_t *src = level_groups;
 
 	if ((target_mode == MODE_NORMAL) || (target_mode == MODE_BIKE)) {
 		for(i = 0; i < (sizeof(level_groups) / sizeof(level_groups[0])); i++) {
@@ -215,9 +215,6 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode)
 	}
 	else if (target_mode == MODE_BLINKY) {
 		mc = LAST_BLINKY; //for blinky mode - levels are in fact blinkies
-	}
-	else if (target_mode == MODE_RAMPING) {
-		mc = FINE_RAMP_SIZE;
 	}
 
 	return mc;
@@ -256,6 +253,11 @@ int __attribute__((noreturn,OS_main)) main (void)
 	TCCR0B = 0x01; // Set timer to do PWM for correct output pin and set prescaler timing
 
 	ADC_on();
+
+	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
+	WDTCR |= (1 << WDTIE) | (1 << WDCE);
+	WDTCR |= WDTO_1S; //1sec timeout
+	sei();
 
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
