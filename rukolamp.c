@@ -98,15 +98,15 @@
 uint8_t fast_presses[NUM_FP_BYTES] __attribute__ ((section (".noinit")));
 
 // Blinky modes, first and last entry must correspond with FIRST_BLINKY and LAST_BLINKY
-PROGMEM const uint8_t blinky_mode_list[] = { BLINKY_BATT_CHECK, BLINKY_STROBE, BLINKY_BEACON };
+const uint8_t blinky_mode_list[] PROGMEM = { BLINKY_BATT_CHECK, BLINKY_STROBE, BLINKY_BEACON };
 
 // Modes (gets set when the light starts up based on saved config values)
-PROGMEM const uint8_t pwm_ramp_values[]  = { PWM_RAMP_VALUES };
+const uint8_t pwm_ramp_values[] PROGMEM = { PWM_RAMP_VALUES };
 
-PROGMEM const uint8_t pwm_fine_ramp_values[] = { FINE_RAMP_VALUES };
+const uint8_t pwm_fine_ramp_values[] PROGMEM = { FINE_RAMP_VALUES };
 
 #define NUM_LEVEL_GROUPS 8 // Can define up to 16 groups, theoretically the group can have up to 16 level entries
-PROGMEM const uint8_t level_groups[] = {
+const uint8_t level_groups[] PROGMEM __attribute__((used)) = {
 	1, 2, 4, 5, 7, 8, 0,
 	3, 5, 7, 8, 0,
 	4, 6, 8, 0,
@@ -122,8 +122,8 @@ PROGMEM const uint8_t level_groups[] = {
 register uint8_t actual_level_id asm("r6");
 register uint8_t actual_mode asm("r7");
 register uint8_t actual_pwm_output asm("r8");
-register uint8_t config asm("r9");
-register uint8_t status asm("r10");
+volatile register uint8_t config asm("r9");
+volatile register uint8_t status asm("r10");
 
 //uint8_t available_levels[LONGEST_LEVEL_GROUP];
 //uint8_t num_available_levels;
@@ -138,7 +138,15 @@ inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
 inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
 inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
-int main(void) __attribute__((OS_main));
+
+ISR(BADISR_vect) { //just for case
+  __asm__("nop\n\t");
+}
+
+ISR(WDT_vect)
+{
+  __asm__("nop\n\t");
+}
 
 inline void ResetState() {
 	config = DEFAULTS_CONFIG;
@@ -154,7 +162,7 @@ inline void SetOutputPwm(uint8_t pwm1) {
 }
 
 void SetLevel(uint8_t level_id) {
-	uint8_t pwm_value = pgm_read_byte(pwm_ramp_values  + level_id - 1);
+	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_id - 1]);
 	if (pwm_value < 15) { TCCR0A = PHASE; }
 	SetOutputPwm(pwm_value);
 }
@@ -192,8 +200,8 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode)
 	const uint8_t *src = level_groups;
 
 	if ((target_mode == MODE_NORMAL) || (target_mode == MODE_BIKE)) {
-		for(i = 0; i < sizeof(level_groups); i++) {
-			level = pgm_read_byte(src + i);
+		for(i = 0; i < (sizeof(level_groups) / sizeof(level_groups[0])); i++) {
+			level = pgm_read_byte(&level_groups[i]);
 			// if we hit a 0, that means we're moving on to the next group
 			if (level == 0) {
 				group++;
@@ -240,7 +248,7 @@ inline void NextMode() {
 
 // =========================================================================
 
-int main(void)
+int __attribute__((noreturn,OS_main)) main (void)
 {
 
 	DDRB |= (1 << PWM_PIN);	 // Set PWM pin to output, enable main channel
@@ -365,11 +373,11 @@ int main(void)
 				//uint8_t new
 				actual_pwm_output = actual_pwm_output - 1; // step down from solid modes somewhat gradually
 
-				} else { // Already at the lowest mode
+				//} else { // Already at the lowest mode
 					SetOutputPwm(0); // Turn off the light
 					set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Power down as many components as possible
 					sleep_mode();
-				}
+				//}
 				SetOutputPwm(actual_pwm_output);
 				lowbatt_cnt = 0;
 				_delay_s(); // Wait before lowering the level again
