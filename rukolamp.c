@@ -52,8 +52,11 @@
 
 #define PWM_RAMP_SIZE  8
 #define PWM_RAMP_VALUES   5, 26, 64, 85, 128, 169, 192, 255  // 1, 10, 25, 33, 50, 66, 75, 100%
+
 #define FINE_RAMP_SIZE 16
 #define FINE_RAMP_VALUES 5, 15, 26, 39, 55, 74, 91, 104, 120, 134, 145, 157, 172, 197, 225, 255 //by 1/16th of 100%
+#define RAMPING_TRIGGER_VALUE_DOWN -1
+#define RAMPING_TRIGGER_VALUE_UP 1
 
 // These need to be in sequential order, and numbered from 0, no gaps.
 // Make sure to update FIRST_BLINKY and LAST_BLINKY as needed.
@@ -76,7 +79,7 @@
 #define CONFIG_BLINK_SPEED		 750 // ms per normal-speed blink
 
 #define TURBO_MINUTES 1 // when turbo timer is enabled, how long before stepping down
-#define TICKS_PER_MINUTE 120 // used for Turbo Timer timing
+#define TICKS_PER_MINUTE 30 // used for Turbo Timer timing
 #define TURBO_LOWER 128  // the PWM level to use when stepping down
 #define ID_TURBO PWM_RAMP_SIZE - 1	// Convenience code for turbo mode (id of 100% mode in pwm ramp)
 
@@ -89,7 +92,7 @@
  */
 
 // Ignore a spurious warning, we did the cast on purpose
-#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
+//#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
 
 #define OWN_DELAY		   // Don't use stock delay functions.
 #define USE_DELAY_MS	 // use _delay_ms()
@@ -108,7 +111,7 @@ const uint8_t pwm_ramp_values[] PROGMEM = { PWM_RAMP_VALUES };
 const uint8_t pwm_fine_ramp_values[] PROGMEM = { FINE_RAMP_VALUES };
 
 #define NUM_LEVEL_GROUPS 8 // Can define up to 16 groups, theoretically the group can have up to 16 level entries
-const uint8_t level_groups[] PROGMEM __attribute__((used)) = {
+const uint8_t level_groups[] PROGMEM = {
 	1, 2, 4, 5, 7, 8, 0,
 	3, 5, 7, 8, 0,
 	4, 6, 8, 0,
@@ -116,19 +119,19 @@ const uint8_t level_groups[] PROGMEM __attribute__((used)) = {
 	2, 0,
 	5, 0,
 	1, 2, 3, 0,
-	3, 7, 0
+	3, 7, 0,
 };
 // has to be the same lenght as the longest level group (in our case 6)
 #define LONGEST_LEVEL_GROUP 6 // dont forget to update if editing groups
+uint8_t level_group_values[LONGEST_LEVEL_GROUP];
 
-register uint8_t actual_level_id asm("r6");
-register uint8_t actual_mode asm("r7");
-register uint8_t actual_pwm_output asm("r8");
-register uint8_t config asm("r9");
-register uint8_t status asm("r10");
-
-//uint8_t available_levels[LONGEST_LEVEL_GROUP];
-//uint8_t num_available_levels;
+register uint8_t actual_level_id asm("r3");
+register uint8_t actual_mode asm("r4");
+register uint8_t actual_pwm_output asm("r5");
+register uint8_t config asm("r6");
+register uint8_t status asm("r7");
+register int8_t ramping_trigger asm("r8");
+register int8_t power_reduction asm("r9");
 
 // =========================================================================
 
@@ -160,9 +163,11 @@ EMPTY_INTERRUPT(BADISR_vect); //just for case
 
 ISR(WDT_vect, ISR_NAKED)
 {
+	cli();
 	ResetFastPresses();
 	//turn off watchog (we already had our 1sec)
 	WDTCR = 0;
+	__asm__("ret\n\t"); //trick how to leave interrupts turned off after returning from function
 }
 
 inline void ResetState() {
@@ -173,14 +178,15 @@ inline void ResetState() {
 	actual_level_id = status_level_id();
 }
 
-inline void SetOutputPwm(uint8_t pwm1) {
-	PWM_LVL = pwm1;
-	actual_pwm_output = pwm1;
+void SetOutputPwm(uint8_t pwm_value) {
+	uint8_t desired_power = pwm_value - power_reduction;
+	if (desired_power < 15) { TCCR0A = PHASE; } else { TCCR0A = FAST; }
+	PWM_LVL = desired_power;
+	actual_pwm_output = pwm_value; //this is right! we need to remember what we want actually. Little bit tricky
 }
 
-void SetLevel(uint8_t level_id) {
-	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_id - 1]);
-	if (pwm_value < 15) { TCCR0A = PHASE; }
+inline void SetLevel(uint8_t level_id) {
+	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_group_values[level_id]]);
 	SetOutputPwm(pwm_value);
 }
 
@@ -196,22 +202,36 @@ void blink(uint8_t val, uint16_t speed)
 	}
 }
 
-uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode) {
-	uint8_t group = 0, level, i, mc=0;
+uint8_t ReadAndCountPwmLevelsForGroup(uint8_t target_group)
+{
+	uint8_t group = 0, level, mc=0;
 
-	if ((target_mode == MODE_NORMAL) || (target_mode == MODE_BIKE)) {
-		for(i = 0; i < (sizeof(level_groups) / sizeof(level_groups[0])); i++) {
-			level = pgm_read_byte(&level_groups[i]);
-			// if we hit a 0, that means we're moving on to the next group
-			if (level == 0) {
-				group++;
-				if (group > target_group) break;
-			}
-			// else if we're in the right group, store the mode and increase the mode count
-			else if (group == target_group) {
-				mc++;
-			}
+	for(uint8_t i = 0; i < (sizeof(level_groups) / sizeof(level_groups[0])); i++) {
+		level = pgm_read_byte(&level_groups[i]);
+		// if we hit a 0, that means we're moving on to the next group
+		if (level == 0) {
+			group++;
+			if (group > target_group) break;
 		}
+		// else if we're in the right group, store the mode and increase the mode count
+		else if (group == target_group) {
+			level_group_values[mc] = level;
+			mc++;
+		}
+	}
+
+	return mc;
+}
+
+uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
+	uint8_t mc=0;
+
+	if ((target_mode == MODE_NORMAL)) {
+		mc = ReadAndCountPwmLevelsForGroup(config_level_group_number());
+	}
+	else if (target_mode == MODE_BIKE) { //bike only uses the default 6 modes (group 0)
+		ReadAndCountPwmLevelsForGroup(0);
+		mc = 6;
 	}
 	else if (target_mode == MODE_BLINKY) {
 		mc = LAST_BLINKY; //for blinky mode - levels are in fact blinkies
@@ -222,7 +242,7 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_group, uint8_t target_mode)
 
 inline void NextLevel() {
 	if (actual_mode != MODE_RAMPING) {
-		uint8_t num_available_levels = CountNumLevelsForGroupAndMode(config_level_group_number(), actual_mode);
+		uint8_t num_available_levels = CountNumLevelsForGroupAndMode(actual_mode);
 		actual_level_id++;
 		// if we hit the end of list, go to first
 		if (actual_level_id == num_available_levels) {
@@ -230,7 +250,13 @@ inline void NextLevel() {
 		}
 	}
 	else {
-		// TODO - somehow handle trigger of ramping until next press of switch to select that new level
+		// handle trigger of ramping until next press of switch to stay at that new level
+		if (ramping_trigger != 0) {
+			ramping_trigger = 0; //stop at new level
+		}
+		else {
+			ramping_trigger = RAMPING_TRIGGER_VALUE_UP; //start ramping
+		}
 	}
 }
 
@@ -238,9 +264,12 @@ inline void NextMode() {
 	// go to next mode
 	actual_mode++;
 	if (actual_mode > LAST_NORMAL_MODE_ID) actual_mode = MODE_NORMAL;
+	if (actual_mode == MODE_RAMPING) ramping_trigger = RAMPING_TRIGGER_VALUE_UP;
 	set_status_mode(actual_mode);
-	actual_level_id = 0;
 	set_status_level_id(0);
+	actual_level_id = 0;
+	// Since we start on each mode always on level_id 0, we dont need to know real number of levels here. But just in NextMode() function
+	// But we need the levels :(
 }
 
 // =========================================================================
@@ -255,9 +284,13 @@ int __attribute__((noreturn,OS_main)) main (void)
 	ADC_on();
 
 	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
+	wdt_reset();
 	WDTCR |= (1 << WDTIE) | (1 << WDCE);
 	WDTCR |= WDTO_1S; //1sec timeout
 	sei();
+
+	ramping_trigger = 0; //just for sure
+	power_reduction = 0; //just for sure
 
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
@@ -278,19 +311,14 @@ int __attribute__((noreturn,OS_main)) main (void)
 		ResetState(); // Read config values and saved state / or use defaults
 	}
 
-    //TURBO ramp down
+	CountNumLevelsForGroupAndMode(actual_mode);
+
+    //TURBO ramp down + undervoltage protection
 	uint16_t ticks = 0;
 	uint8_t adj_output = 255;
+	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 
-    // VOLTAGE_MON
-	uint8_t lowbatt_cnt = 0;
-
-	//if(actual_level_id > num_available_levels) { actual_pwm_output = actual_level_id; }  // special modes, override output
-	//else { actual_pwm_output = 0; }//read from progmem : available_levels[actual_level_id]; }
-
-	//TODO: pre-set pwm_output value according to level_id which then could be lowered by undervoltage protection
-	
-	while(1) {
+	for(;;) {
 		if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
 			_delay_s();	   // wait for user to stop fast-pressing button
 			ResetFastPresses(); // exit this mode after one use
@@ -321,8 +349,13 @@ int __attribute__((noreturn,OS_main)) main (void)
 			}
 		}
 		else if (actual_mode == MODE_RAMPING) {
-			_delay_s();
-			// TODO - ramping main part
+			if (ramping_trigger != 0) {
+				actual_level_id += ramping_trigger;
+				if (actual_level_id == (FINE_RAMP_SIZE - 1)) ramping_trigger = RAMPING_TRIGGER_VALUE_DOWN; //handles top end
+				if (actual_level_id == 255) ramping_trigger = RAMPING_TRIGGER_VALUE_UP; //handles low end
+			}
+			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
+			if (ramping_trigger != 0) { _delay_ms(125); } else { _delay_s(); _delay_s(); }
 		}
 		else {
 			// Normal or bike mode
@@ -339,6 +372,8 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 				SetLevel(actual_level_id);
 
+				_delay_s();
+				_delay_s();
 			}
 			else // Definitely has to be MODE_BIKE
 			{
@@ -353,36 +388,41 @@ int __attribute__((noreturn,OS_main)) main (void)
 					_delay_ms(10);
 					SetLevel(actual_level_id);
 			}
-
-			_delay_ms(500);  // Otherwise, just sleep.
-
 		}
-		ResetFastPresses(); // This has to come approx 1s after power-on
+		// INFO: Need to keep all modes branch ifs (beacon, etc) to run approx 2sec, to properly work undervoltage reduction cycle speed
+		//ResetFastPresses(); // Probably already cleared by interrupt from watchdog, i think I will remove it from this location
 
 		// Battery undervoltage protection
 		if (ADCSRA & (1 << ADIF)) {  // if a voltage reading is ready
 			uint8_t voltage = ADCH;  // get the waiting value
 
-			if (voltage < ADC_LOW) { // See if voltage is lower than what we were looking for
-				lowbatt_cnt ++;
+			if ((voltage < ADC_LOW) && (ramping_trigger == 0)) { // See if voltage is lower than what we were looking for
+				lowbatt_cnt++;
 			} else {
 				lowbatt_cnt = 0;
 			}
 
-			if (lowbatt_cnt >= 8) {  // See if it's been low for a while, and maybe step down
-				//SetOutputPwm(0);  _delay_ms(100); // blink on step-down:
+			if (lowbatt_cnt >= 2) {  // See if it's been low for a while, and maybe step down
+				//somehow scale the step according to expected level
+				uint8_t decrease_step;
+				if (actual_pwm_output > 200) { decrease_step = 10; }
+				else if (actual_pwm_output > 150) { decrease_step = 7; }
+				else if (actual_pwm_output > 100) { decrease_step =5; }
+				else if (actual_pwm_output > 50) { decrease_step = 3; }
+				else { decrease_step = 1; }
 
-				//uint8_t new
-				actual_pwm_output = actual_pwm_output - 1; // step down from solid modes somewhat gradually
+				power_reduction += decrease_step;
 
-				//} else { // Already at the lowest mode
+				if (power_reduction > actual_pwm_output) { // Already at the lowest mode
 					SetOutputPwm(0); // Turn off the light
 					set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Power down as many components as possible
 					sleep_mode();
-				//}
-				SetOutputPwm(actual_pwm_output);
+				}
+				//SetOutputPwm(0); cannot be used because it effectively sets variable actual_pwm_output to 0 therefore we cannot revert back original level
+				TCCR0A = PHASE; PWM_LVL = 0; _delay_ms(1); // blink on step-down
+				SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction
 				lowbatt_cnt = 0;
-				_delay_s(); // Wait before lowering the level again
+				//_delay_s(); // Wait before lowering the level again
 			}
 
 			ADCSRA |= (1 << ADSC); // Make sure conversion is running for next time through
