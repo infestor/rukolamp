@@ -223,7 +223,7 @@ void SetOutputPwm(uint8_t pwm_value) {
 }
 
 void SetLevel(uint8_t level_id) {
-	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_group_values[level_id]]);
+	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_group_values[level_id] - 1]);
 	SetOutputPwm(pwm_value);
 }
 
@@ -361,6 +361,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 			ResetFastPresses(); // exit this mode after one use
 
 			// TODO -  Enter into configuration
+			
 		}
 		else if (actual_mode == MODE_BLINKY)
 		{
@@ -394,38 +395,39 @@ int __attribute__((noreturn,OS_main)) main (void)
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
 			if (ramping_trigger != 0) { _delay_ms(125); } else { _delay_s(); _delay_s(); }
 		}
-		else {
-			// Normal or bike mode
-
-			if (actual_mode == MODE_NORMAL)
-			{
-				if ((actual_level_id == ID_TURBO) && (ticks > (TURBO_MINUTES * TICKS_PER_MINUTE))) {
+		else if (actual_mode == MODE_NORMAL)
+		{
+			if (actual_level_id == ID_TURBO) {
+				if (ticks > (TURBO_MINUTES * TICKS_PER_MINUTE)) {
 					if (adj_output > TURBO_LOWER) { adj_output = adj_output - 2; }
 					SetOutputPwm(adj_output);
 				}
 				else {
+					SetLevel(actual_level_id);
 					ticks++; // count ticks for turbo timer
 				}
-
+			}
+			else {
 				SetLevel(actual_level_id);
+			}
 
-				_delay_s();
-				_delay_s();
-			}
-			else // Definitely has to be MODE_BIKE
-			{
-					SetLevel(actual_level_id);
-					_delay_s();
-					_delay_s();
-					SetLevel(ID_TURBO);
-					_delay_ms(10);
-					SetLevel(actual_level_id);
-					_delay_ms(150);
-					SetLevel(ID_TURBO);
-					_delay_ms(10);
-					SetLevel(actual_level_id);
-			}
+			_delay_s();
+			_delay_s();
 		}
+		else // Definitely has to be MODE_BIKE
+		{
+				SetLevel(actual_level_id);
+				_delay_s();
+				_delay_s();
+				SetLevel(ID_TURBO);
+				_delay_ms(10);
+				SetLevel(actual_level_id);
+				_delay_ms(150);
+				SetLevel(ID_TURBO);
+				_delay_ms(10);
+				SetLevel(actual_level_id);
+		}
+		
 		// INFO: Need to keep all modes branch ifs (beacon, etc) to run approx 2sec, to properly work undervoltage reduction cycle speed
 		//ResetFastPresses(); // Probably already cleared by interrupt from watchdog, i think I will remove it from this location
 
