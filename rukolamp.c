@@ -36,6 +36,7 @@
 // 5 - memory on/off
 // 6 .. 8 - so far not used
 #define DEFAULTS_CONFIG 0b00000000  // NORMAL mode, 6 levels (level group 0), without memory
+#define CONFIG_EEPROM_ADDRESS EEPSIZE -1
 
 // state memory byte bits usage:
 // used when memory is ON, to save actual state of flashlight - which mode and which level is set
@@ -92,7 +93,7 @@
  */
 
 // Ignore a spurious warning, we did the cast on purpose
-//#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
+#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
 
 #define OWN_DELAY		   // Don't use stock delay functions.
 #define USE_DELAY_MS	 // use _delay_ms()
@@ -123,7 +124,7 @@ const uint8_t level_groups[] PROGMEM = {
 };
 // has to be the same lenght as the longest level group (in our case 6)
 #define LONGEST_LEVEL_GROUP 6 // dont forget to update if editing groups
-uint8_t level_group_values[LONGEST_LEVEL_GROUP];
+uint8_t level_group_values[LONGEST_LEVEL_GROUP] __attribute__ ((section (".noinit")));
 
 register uint8_t actual_level_id asm("r3");
 register uint8_t actual_mode asm("r4");
@@ -131,7 +132,8 @@ register uint8_t actual_pwm_output asm("r5");
 register uint8_t config asm("r6");
 register uint8_t status asm("r7");
 register int8_t ramping_trigger asm("r8");
-register int8_t power_reduction asm("r9");
+register uint8_t power_reduction asm("r9");
+register uint8_t eepos asm("r10");
 
 // =========================================================================
 
@@ -140,8 +142,8 @@ inline uint8_t config_memory_is_enabled()  { return (config >> 4) & 0b00000001; 
 
 inline uint8_t status_mode()     { return (status     ) & 0b00000011; }
 inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
-inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
-inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
+//inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
+//inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
 inline uint8_t WeDidAFastPress() {
 	uint8_t i;
@@ -159,6 +161,18 @@ void ResetFastPresses() {
 	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
 }
 
+void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
+	uint8_t oldpos = eepos;
+	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
+	eeprom_write_byte((uint8_t *)(eepos), actual_mode | (actual_level_id << 2));  // save current status
+	eeprom_write_byte((uint8_t *)(oldpos), 0xff);     // erase old state
+
+	//update config if necessary
+	if (eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS) != config) {
+		eeprom_write_byte((uint8_t *)CONFIG_EEPROM_ADDRESS, config);
+	}
+}
+
 EMPTY_INTERRUPT(BADISR_vect); //just for case
 
 ISR(WDT_vect, ISR_NAKED)
@@ -167,12 +181,35 @@ ISR(WDT_vect, ISR_NAKED)
 	ResetFastPresses();
 	//turn off watchog (we already had our 1sec)
 	WDTCR = 0;
+	SaveStatusAndConfig();
 	__asm__("ret\n\t"); //trick how to leave interrupts turned off after returning from function
 }
 
-inline void ResetState() {
+inline void FirstBootState() {
 	config = DEFAULTS_CONFIG;
 	status = DEFAULTS_STATE;
+}
+
+inline void RestoreStatusAndConfig() {
+	uint8_t eep;
+	uint8_t first = 1;
+
+	config = eeprom_read_byte((const uint8_t *)CONFIG_EEPROM_ADDRESS);
+
+	// find the mode index data
+	for(uint8_t i = 0; i < (EEPSIZE / 2); i++) {
+		eep = eeprom_read_byte((const uint8_t *)i);
+		if (eep != 0xff) {
+			eepos = i;
+			status = eep;
+			first = 0;
+			break;
+		}
+	}
+	// if no mode_idx was found, assume this is the first boot
+	if (first) {
+		FirstBootState();
+	}
 
 	actual_mode = status_mode();
 	actual_level_id = status_level_id();
@@ -185,7 +222,7 @@ void SetOutputPwm(uint8_t pwm_value) {
 	actual_pwm_output = pwm_value; //this is right! we need to remember what we want actually. Little bit tricky
 }
 
-inline void SetLevel(uint8_t level_id) {
+void SetLevel(uint8_t level_id) {
 	uint8_t pwm_value = pgm_read_byte(&pwm_ramp_values[level_group_values[level_id]]);
 	SetOutputPwm(pwm_value);
 }
@@ -265,8 +302,8 @@ inline void NextMode() {
 	actual_mode++;
 	if (actual_mode > LAST_NORMAL_MODE_ID) actual_mode = MODE_NORMAL;
 	if (actual_mode == MODE_RAMPING) ramping_trigger = RAMPING_TRIGGER_VALUE_UP;
-	set_status_mode(actual_mode);
-	set_status_level_id(0);
+	//set_status_mode(actual_mode);
+	//set_status_level_id(0);
 	actual_level_id = 0;
 	// Since we start on each mode always on level_id 0, we dont need to know real number of levels here. But just in NextMode() function
 	// But we need the levels :(
@@ -285,8 +322,8 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
 	wdt_reset();
-	WDTCR |= (1 << WDTIE) | (1 << WDCE);
-	WDTCR |= WDTO_1S; //1sec timeout
+	WDTCR = (1 << WDTIE) | (1 << WDCE);
+	WDTCR = (1 << WDTIE) | (1 << WDCE) | WDTO_1S; //1sec timeout
 	sei();
 
 	ramping_trigger = 0; //just for sure
@@ -308,7 +345,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 		ResetFastPresses();
 
 		// Does not necessarily have to be used now because we have not implemented saving to memory at all so all is defaultly on 0 anyway
-		ResetState(); // Read config values and saved state / or use defaults
+		RestoreStatusAndConfig(); // Read config values and saved state / or use defaults
 	}
 
 	CountNumLevelsForGroupAndMode(actual_mode);
