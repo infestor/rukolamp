@@ -76,13 +76,13 @@
 #define CONFIGURATION_MODE_ID LAST_NORMAL_MODE_ID + 1
 #define GROUP_SELECT_MODE CONFIGURATION_MODE_ID + 1
 
-#define CONFIG_BLINK_BRIGHTNESS	1 // output to use for blinks on battery check (and other modes) = 10%
+#define CONFIG_BLINK_BRIGHTNESS	15 // output to use for blinks on battery check (and other modes) = 10%
 #define CONFIG_BLINK_SPEED		 750 // ms per normal-speed blink
 
 #define TURBO_MINUTES 1 // when turbo timer is enabled, how long before stepping down
 #define TICKS_PER_MINUTE 30 // used for Turbo Timer timing
 #define TURBO_LOWER 128  // the PWM level to use when stepping down
-#define ID_TURBO PWM_RAMP_SIZE - 1	// Convenience code for turbo mode (id of 100% mode in pwm ramp)
+#define ID_TURBO PWM_RAMP_SIZE	// Convenience code for turbo mode (id of 100% mode in pwm ramp)
 
 
 // Calibrate voltage and OTC in this file:
@@ -104,7 +104,7 @@
 uint8_t fast_presses[NUM_FP_BYTES] __attribute__ ((section (".noinit")));
 
 // Blinky modes, first and last entry must correspond with FIRST_BLINKY and LAST_BLINKY
-const uint8_t blinky_mode_list[] PROGMEM = { BLINKY_BATT_CHECK, BLINKY_STROBE, BLINKY_BEACON };
+//const uint8_t blinky_mode_list[] PROGMEM = { BLINKY_BATT_CHECK, BLINKY_STROBE, BLINKY_BEACON };
 
 // Modes (gets set when the light starts up based on saved config values)
 const uint8_t pwm_ramp_values[] PROGMEM = { PWM_RAMP_VALUES };
@@ -137,8 +137,8 @@ register uint8_t eepos asm("r10");
 
 // =========================================================================
 
-inline uint8_t config_level_group_number() { return (config     ) & 0b00001111; }
-inline uint8_t config_memory_is_enabled()  { return (config >> 4) & 0b00000001; }
+//inline uint8_t config_level_group_number() { return (config     ) & 0b00001111; }
+//inline uint8_t config_memory_is_enabled()  { return (config >> 4) & 0b00000001; }
 
 inline uint8_t status_mode()     { return (status     ) & 0b00000011; }
 inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
@@ -231,7 +231,7 @@ void blink(uint8_t val, uint16_t speed)
 {
 	for (; val > 0; val--)
 	{
-		SetLevel(CONFIG_BLINK_BRIGHTNESS);
+		SetOutputPwm(CONFIG_BLINK_BRIGHTNESS);
 		_delay_ms(speed);
 		SetOutputPwm(0);
 		_delay_ms(speed);
@@ -264,7 +264,8 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
 	uint8_t mc=0;
 
 	if ((target_mode == MODE_NORMAL)) {
-		mc = ReadAndCountPwmLevelsForGroup(config_level_group_number());
+		//mc = ReadAndCountPwmLevelsForGroup(config_level_group_number());
+		mc = ReadAndCountPwmLevelsForGroup(config); //using just config saves few bytes
 	}
 	else if (target_mode == MODE_BIKE) { //bike only uses the default 6 modes (group 0)
 		ReadAndCountPwmLevelsForGroup(0);
@@ -285,14 +286,15 @@ inline void NextLevel() {
 		if (actual_level_id == num_available_levels) {
 			actual_level_id = 0;
 		}
+		ramping_trigger = 0;
 	}
 	else {
 		// handle trigger of ramping until next press of switch to stay at that new level
-		if (ramping_trigger != 0) {
-			ramping_trigger = 0; //stop at new level
+		if (ramping_trigger == 0) {
+			ramping_trigger = RAMPING_TRIGGER_VALUE_UP; //start ramping
 		}
 		else {
-			ramping_trigger = RAMPING_TRIGGER_VALUE_UP; //start ramping
+			ramping_trigger = 0; //stop at new level
 		}
 	}
 }
@@ -322,11 +324,11 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
 	wdt_reset();
-	WDTCR = (1 << WDTIE) | (1 << WDCE);
-	WDTCR = (1 << WDTIE) | (1 << WDCE) | WDTO_1S; //1sec timeout
+	WDTCR = (1 << WDCE);
+	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
 
-	ramping_trigger = 0; //just for sure
+	//ramping_trigger = 0; //just for sure
 	power_reduction = 0; //just for sure
 
 	// check button press time, unless we're in group selection mode
@@ -336,6 +338,15 @@ int __attribute__((noreturn,OS_main)) main (void)
 		// triple-tap from a solid mode
 		if(fast_presses[0] == 5) {
 			NextMode();
+		}
+		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
+			_delay_s();	   // wait for user to stop fast-pressing button
+			ResetFastPresses(); // exit this mode after one use
+
+			// TODO -  Enter into configuration
+			config++;
+			if (config > NUM_LEVEL_GROUPS) config = 0;
+			blink(config, 200);
 		}
 		else {
 			NextLevel(); //this includes also changing of blinky modes, because they are taken from list the same way as levels
@@ -351,37 +362,33 @@ int __attribute__((noreturn,OS_main)) main (void)
 	CountNumLevelsForGroupAndMode(actual_mode);
 
     //TURBO ramp down + undervoltage protection
-	uint16_t ticks = 0;
+	uint8_t ticks = 0;
 	uint8_t adj_output = 255;
 	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 
 	for(;;) {
-		if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
-			_delay_s();	   // wait for user to stop fast-pressing button
-			ResetFastPresses(); // exit this mode after one use
-
-			// TODO -  Enter into configuration
-			
-		}
-		else if (actual_mode == MODE_BLINKY)
+		if (actual_mode == MODE_BLINKY)
 		{
 			if (actual_level_id == BLINKY_STROBE) {
 				for(uint8_t i = 0; i < 7; i++) {
-					SetLevel(ID_TURBO);
+					SetOutputPwm(255);
 					_delay_ms(10);
 					SetOutputPwm(0);
+					actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
 					_delay_ms(300);
 				}
 			}
 			else if (actual_level_id == BLINKY_BEACON) {
-				SetLevel(ID_TURBO);
+				SetOutputPwm(255);
 				_delay_ms(10);
 				SetOutputPwm(0);
+				actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
 				_delay_s();
 				_delay_s();
 			}
 			else if (actual_level_id == BLINKY_BATT_CHECK) {
 				 blink(battcheck(), CONFIG_BLINK_SPEED / 4);
+					actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
 				 _delay_s();
 				 _delay_s();
 			}
@@ -390,14 +397,14 @@ int __attribute__((noreturn,OS_main)) main (void)
 			if (ramping_trigger != 0) {
 				actual_level_id += ramping_trigger;
 				if (actual_level_id == (FINE_RAMP_SIZE - 1)) ramping_trigger = RAMPING_TRIGGER_VALUE_DOWN; //handles top end
-				if (actual_level_id == 255) ramping_trigger = RAMPING_TRIGGER_VALUE_UP; //handles low end
+				if (actual_level_id == 0) { ramping_trigger = RAMPING_TRIGGER_VALUE_UP;} //handles low end
 			}
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
 			if (ramping_trigger != 0) { _delay_ms(125); } else { _delay_s(); _delay_s(); }
 		}
 		else if (actual_mode == MODE_NORMAL)
 		{
-			if (actual_level_id == ID_TURBO) {
+			if (level_group_values[actual_level_id] == ID_TURBO) {
 				if (ticks > (TURBO_MINUTES * TICKS_PER_MINUTE)) {
 					if (adj_output > TURBO_LOWER) { adj_output = adj_output - 2; }
 					SetOutputPwm(adj_output);
@@ -419,16 +426,17 @@ int __attribute__((noreturn,OS_main)) main (void)
 				SetLevel(actual_level_id);
 				_delay_s();
 				_delay_s();
-				SetLevel(ID_TURBO);
+				SetOutputPwm(255);
 				_delay_ms(10);
 				SetLevel(actual_level_id);
 				_delay_ms(150);
-				SetLevel(ID_TURBO);
+				SetOutputPwm(255);
 				_delay_ms(10);
 				SetLevel(actual_level_id);
 		}
-		
+
 		// INFO: Need to keep all modes branch ifs (beacon, etc) to run approx 2sec, to properly work undervoltage reduction cycle speed
+
 		//ResetFastPresses(); // Probably already cleared by interrupt from watchdog, i think I will remove it from this location
 
 		// Battery undervoltage protection
@@ -446,20 +454,21 @@ int __attribute__((noreturn,OS_main)) main (void)
 				uint8_t decrease_step;
 				if (actual_pwm_output > 200) { decrease_step = 10; }
 				else if (actual_pwm_output > 150) { decrease_step = 7; }
-				else if (actual_pwm_output > 100) { decrease_step =5; }
+				else if (actual_pwm_output > 100) { decrease_step = 5; }
 				else if (actual_pwm_output > 50) { decrease_step = 3; }
 				else { decrease_step = 1; }
 
 				power_reduction += decrease_step;
 
 				if (power_reduction > actual_pwm_output) { // Already at the lowest mode
-					SetOutputPwm(0); // Turn off the light
+					PWM_LVL = 0; //SetOutputPwm(0); // Turn off the light
 					set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Power down as many components as possible
 					sleep_mode();
 				}
 				//SetOutputPwm(0); cannot be used because it effectively sets variable actual_pwm_output to 0 therefore we cannot revert back original level
-				TCCR0A = PHASE; PWM_LVL = 0; _delay_ms(1); // blink on step-down
-				SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction
+				//TCCR0A = PHASE;
+				PWM_LVL = 0; _delay_ms(1); // blink on step-down
+				//SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction not needed to refresh here, because it will do itself next round somewhere
 				lowbatt_cnt = 0;
 				//_delay_s(); // Wait before lowering the level again
 			}
