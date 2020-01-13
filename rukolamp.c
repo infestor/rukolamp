@@ -96,8 +96,9 @@
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
 
 #define OWN_DELAY		   // Don't use stock delay functions.
-#define USE_DELAY_MS	 // use _delay_ms()
-#define USE_DELAY_S		 // Also use _delay_s(), not just _delay_ms()
+//#define USE_DELAY_MS	 // use _delay_ms()
+//#define USE_DELAY_S		 // Also use _delay_s(), not just _delay_ms()
+#define USE_DELAY_4MS  //Suitable for all situations we need to handle and uses only uint8_t as input so it saves few bytes of rom
 #include "tk-delay.h"
 
 #define NUM_FP_BYTES 3
@@ -227,15 +228,15 @@ void SetLevel(uint8_t level_id) {
 	SetOutputPwm(pwm_value);
 }
 
-void blink(uint8_t val, uint16_t speed)
+void blink(uint8_t val, uint8_t speed)
 {
 	for (; val > 0; val--)
 	{
 		SetOutputPwm(CONFIG_BLINK_BRIGHTNESS);
-		_delay_ms(speed);
+		_delay_4ms(speed);
 		SetOutputPwm(0);
-		_delay_ms(speed);
-		_delay_ms(speed);
+		_delay_4ms(speed);
+		_delay_4ms(speed);
 	}
 }
 
@@ -340,13 +341,13 @@ int __attribute__((noreturn,OS_main)) main (void)
 			NextMode();
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
-			_delay_s();	   // wait for user to stop fast-pressing button
+			_delay_4ms(250);	   // wait for user to stop fast-pressing button
 			ResetFastPresses(); // exit this mode after one use
 
 			// TODO -  Enter into configuration
 			config++;
 			if (config > NUM_LEVEL_GROUPS) config = 0;
-			blink(config, 200);
+			blink(config, 25);
 		}
 		else {
 			NextLevel(); //this includes also changing of blinky modes, because they are taken from list the same way as levels
@@ -372,25 +373,25 @@ int __attribute__((noreturn,OS_main)) main (void)
 			if (actual_level_id == BLINKY_STROBE) {
 				for(uint8_t i = 0; i < 7; i++) {
 					SetOutputPwm(255);
-					_delay_ms(10);
+					_delay_4ms(3);
 					SetOutputPwm(0);
 					actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-					_delay_ms(300);
+					_delay_4ms(75);
 				}
 			}
 			else if (actual_level_id == BLINKY_BEACON) {
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetOutputPwm(0);
 				actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-				_delay_s();
-				_delay_s();
+				_delay_4ms(250);
+				_delay_4ms(250);
 			}
 			else if (actual_level_id == BLINKY_BATT_CHECK) {
-				 blink(battcheck(), CONFIG_BLINK_SPEED / 4);
-					actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
-				 _delay_s();
-				 _delay_s();
+				blink(battcheck(), CONFIG_BLINK_SPEED / 16);
+				actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
+				_delay_4ms(250);
+				_delay_4ms(250);
 			}
 		}
 		else if (actual_mode == MODE_RAMPING) {
@@ -400,7 +401,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 				if (actual_level_id == 0) { ramping_trigger = RAMPING_TRIGGER_VALUE_UP;} //handles low end
 			}
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
-			if (ramping_trigger != 0) { _delay_ms(125); } else { _delay_s(); _delay_s(); }
+			if (ramping_trigger != 0) { _delay_4ms(31); } else { _delay_4ms(250); _delay_4ms(250); }
 		}
 		else if (actual_mode == MODE_NORMAL)
 		{
@@ -418,20 +419,20 @@ int __attribute__((noreturn,OS_main)) main (void)
 				SetLevel(actual_level_id);
 			}
 
-			_delay_s();
-			_delay_s();
+			_delay_4ms(250);
+			_delay_4ms(250);
 		}
 		else // Definitely has to be MODE_BIKE
 		{
 				SetLevel(actual_level_id);
-				_delay_s();
-				_delay_s();
+				_delay_4ms(250);
+				_delay_4ms(250);
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetLevel(actual_level_id);
-				_delay_ms(150);
+				_delay_4ms(37);
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetLevel(actual_level_id);
 		}
 
@@ -467,7 +468,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 				}
 				//SetOutputPwm(0); cannot be used because it effectively sets variable actual_pwm_output to 0 therefore we cannot revert back original level
 				//TCCR0A = PHASE;
-				PWM_LVL = 0; _delay_ms(1); // blink on step-down
+				PWM_LVL = 0; _delay_4ms(1); // blink on step-down
 				//SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction not needed to refresh here, because it will do itself next round somewhere
 				lowbatt_cnt = 0;
 				//_delay_s(); // Wait before lowering the level again
