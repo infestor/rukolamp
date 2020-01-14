@@ -12,7 +12,7 @@
     .global __vectors
     .func   __vectors
 __vectors:
-    RJMP   __ctors_end
+    RJMP   __init
     RETI
     RETI
     RETI
@@ -20,8 +20,10 @@ __vectors:
     RETI
     RETI
     RETI
-;    .weak __vector_8
+
+    .weak __vector_8
     RJMP __vector_8
+
     RETI
     RETI
     RETI
@@ -36,38 +38,19 @@ __vectors:
 ;   .func   __init
 __init:
 
+#ifndef __AVR_ASM_ONLY__
     .weak   __stack
+    .weak   __heap_end
+    .set    __heap_end, 0
 
     .section .init2,"ax",@progbits
     clr __zero_reg__
     out AVR_STATUS_ADDR, __zero_reg__
     ldi r28,lo8(__stack)
-#ifdef __AVR_XMEGA__
     out AVR_STACK_POINTER_LO_ADDR, r28
-#ifdef _HAVE_AVR_STACK_POINTER_HI
-    ldi r29,hi8(__stack)
-    out AVR_STACK_POINTER_HI_ADDR, r29
-#endif  /* _HAVE_AVR_STACK_POINTER_HI */
-#else
-#ifdef _HAVE_AVR_STACK_POINTER_HI
-    ldi r29,hi8(__stack)
-    out AVR_STACK_POINTER_HI_ADDR, r29
-#endif  /* _HAVE_AVR_STACK_POINTER_HI */
-    out AVR_STACK_POINTER_LO_ADDR, r28
-#endif  /* __AVR_XMEGA__ */
 
-#ifdef __AVR_3_BYTE_PC__
-    ldi r16, hh8(pm(__vectors))
-    out _SFR_IO_ADDR(EIND), r16
-#endif  /* __AVR_3_BYTE_PC__ */
-
-;vectors_end:
-;eor r1, r1
-;out 0x3f, r1    ; 63
-;ldi r28, 0x5F   ; 95
-;ldi r29, 0x02   ; 2
-;out 0x3e, r29   ; 62
-;out 0x3d, r28   ; 61
+    .set    __stack, RAMEND
+#endif /* !__AVR_ASM_ONLY__ */
 
 
     .section .init9,"ax",@progbits

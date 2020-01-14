@@ -10,3 +10,4 @@ Debug/
 *.o
 *.a
 *.obj
+*.lst
