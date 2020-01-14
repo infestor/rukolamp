@@ -341,13 +341,18 @@ int __attribute__((noreturn,OS_main)) main (void)
 			NextMode();
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
+			// Enter into configuration
+			WDTCR = (1 << WDCE);
+			WDTCR = (1 << WDTIE) | WDTO_2S; //prolong autosave to 2 sec
+			blink(2, 18);
+			wdt_reset();
 			_delay_4ms(250);	   // wait for user to stop fast-pressing button
-			ResetFastPresses(); // exit this mode after one use
 
-			// TODO -  Enter into configuration
 			config++;
 			if (config > NUM_LEVEL_GROUPS) config = 0;
-			blink(config, 25);
+			_delay_4ms(250);
+			ResetFastPresses(); // exit this mode after one use
+			blink(config, 50);
 		}
 		else {
 			NextLevel(); //this includes also changing of blinky modes, because they are taken from list the same way as levels

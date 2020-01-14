@@ -5,7 +5,7 @@ MCU=attiny13a
 
 CFLAGS="-Wall -W"
 #CLAGS+=" -pedantic"
-CFLAGS+=" -g -gdwarf-2"
+CFLAGS+=" -g3 -gdwarf-2"
 CFLAGS+=" -DF_CPU=4800000UL -Os"
 CFLAGS+=" -ffreestanding"
 #CFLAGS+=" -mshort-calls"
@@ -20,8 +20,10 @@ CFLAGS+=" -Wl,--gc-sections"
 CFLAGS+=" -ffunction-sections"
 CFLAGS+=" -fdata-sections"
 CFLAGS+=" -Wl,--relax"
+CFLAGS+=" -Wa,-a,-ad"
+CFLAGS+=" -nostartfiles"
 
-avr-c++ -mmcu=$MCU $CFLAGS rukolamp.c -o rukolamp.elf
+avr-c++ -mmcu=$MCU $CFLAGS gcrt1.S rukolamp.c -o rukolamp.elf  > rukolamp.lst
 
 avr-objcopy -O ihex -R .eeprom -R .fuse -R .lock -R .signature rukolamp.elf rukolamp.hex
 avr-size --mcu=$MCU --format=avr rukolamp.elf
