@@ -163,10 +163,14 @@ void ResetFastPresses() {
 }
 
 void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
-	uint8_t oldpos = eepos;
-	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
-	eeprom_write_byte((uint8_t *)(eepos), actual_mode | (actual_level_id << 2));  // save current status
-	eeprom_write_byte((uint8_t *)(oldpos), 0xff);     // erase old state
+	uint8_t new_status = actual_mode | (actual_level_id << 2);
+
+	if (status != new_status) {
+		uint8_t oldpos = eepos;
+		eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
+		eeprom_write_byte((uint8_t *)(eepos), new_status);  // save current status
+		eeprom_write_byte((uint8_t *)(oldpos), 0xff);     // erase old state
+	}
 
 	//update config if necessary
 	if (eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS) != config) {
@@ -174,7 +178,7 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	}
 }
 
-EMPTY_INTERRUPT(BADISR_vect); //just for case
+//EMPTY_INTERRUPT(BADISR_vect); //just for case - eliminated by custom startup files
 
 ISR(WDT_vect, ISR_NAKED)
 {
@@ -270,7 +274,7 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
 	}
 	else if (target_mode == MODE_BIKE) { //bike only uses the default 6 modes (group 0)
 		ReadAndCountPwmLevelsForGroup(0);
-		mc = 6;
+		mc = 5;
 	}
 	else if (target_mode == MODE_BLINKY) {
 		mc = LAST_BLINKY; //for blinky mode - levels are in fact blinkies
@@ -329,9 +333,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
 
-	//ramping_trigger = 0; //just for sure
-	power_reduction = 0; //just for sure
-
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
 		IncrementFastPresses();
@@ -368,9 +369,10 @@ int __attribute__((noreturn,OS_main)) main (void)
 	CountNumLevelsForGroupAndMode(actual_mode);
 
     //TURBO ramp down + undervoltage protection
+	power_reduction = 0; //just for sure
+	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 	uint8_t ticks = 0;
 	uint8_t adj_output = 255;
-	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 
 	for(;;) {
 		if (actual_mode == MODE_BLINKY)
@@ -406,7 +408,12 @@ int __attribute__((noreturn,OS_main)) main (void)
 				if (actual_level_id == 0) { ramping_trigger = RAMPING_TRIGGER_VALUE_UP;} //handles low end
 			}
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
-			if (ramping_trigger != 0) { _delay_4ms(31); } else { _delay_4ms(250); _delay_4ms(250); }
+			if (ramping_trigger != 0) {
+				_delay_4ms(31);
+			} else {
+				_delay_4ms(250);
+				_delay_4ms(250);
+			}
 		}
 		else if (actual_mode == MODE_NORMAL)
 		{
