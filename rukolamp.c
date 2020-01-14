@@ -173,7 +173,9 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	}
 }
 
+/*
 EMPTY_INTERRUPT(BADISR_vect); //just for case
+*/
 
 ISR(WDT_vect, ISR_NAKED)
 {
@@ -313,7 +315,7 @@ inline void NextMode() {
 
 // =========================================================================
 
-int __attribute__((noreturn,OS_main)) main (void)
+int __attribute__((noreturn,OS_main,used)) main (void)
 {
 
 	DDRB |= (1 << PWM_PIN);	 // Set PWM pin to output, enable main channel
@@ -340,12 +342,17 @@ int __attribute__((noreturn,OS_main)) main (void)
 			NextMode();
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
+			// Enter into configuration
+			WDTCR = (1 << WDCE);
+			WDTCR = (1 << WDTIE) | WDTO_2S; //prolong autosave to 2 sec
+			blink(2, 70);
+			wdt_reset();
 			_delay_s();	   // wait for user to stop fast-pressing button
-			ResetFastPresses(); // exit this mode after one use
 
-			// TODO -  Enter into configuration
 			config++;
 			if (config > NUM_LEVEL_GROUPS) config = 0;
+			_delay_s();
+			ResetFastPresses(); // exit this mode after one use
 			blink(config, 200);
 		}
 		else {
@@ -477,4 +484,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 		}
 
 	}
+
+	__builtin_unreachable ();
 }

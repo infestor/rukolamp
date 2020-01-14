@@ -20,6 +20,7 @@ CFLAGS+=" -Wl,--gc-sections"
 CFLAGS+=" -ffunction-sections"
 CFLAGS+=" -fdata-sections"
 CFLAGS+=" -Wl,--relax"
+CFLAGS+=" -nostartfiles"
 
 avr-c++ -mmcu=$MCU $CFLAGS rukolamp.c -o rukolamp.elf
 
