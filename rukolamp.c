@@ -1,9 +1,7 @@
 /*
  */
-// Choose your MCU here, or in the build script
-#define ATTINY 13
-#define NANJG_LAYOUT
-#define __AVR_ATtiny13A__
+
+//#define __AVR_ATtiny13A__
 
 #include <avr/io.h>
 #include <avr/pgmspace.h>
@@ -11,9 +9,9 @@
 #include <avr/eeprom.h>
 #include <avr/sleep.h>
 #include <avr/wdt.h>
+#include <util/delay_basic.h>
 
-#include <string.h>
-
+//ATtiny13A definitions
 #define F_CPU 4800000UL
 #define EEPSIZE 64
 #define V_REF REFS0
@@ -44,11 +42,26 @@
 // 3 .. 6 - active level from group (only 0-15) | or precise level for ramping mode (by 1/16th of 100%)
 // 7 .. 8 - not used yet
 #define DEFAULTS_STATE 0b00000000
-//#define MEMORY_SAVE 1
 
+// ADC related stuff
 #define VOLTAGE_MON		 // get monitoring functions from include
 #define USE_BATTCHECK	   // Enable battery check mode
 #define BATTCHECK_8bars	 // up to 8 blinks
+//these values are counted for voltage divider 3:1
+#define ADC_42     244
+#define ADC_41     238
+#define ADC_40     232
+#define ADC_39     226
+#define ADC_38     221
+#define ADC_37     215
+#define ADC_36     209
+#define ADC_35     203
+#define ADC_34     197
+#define ADC_33     192
+#define ADC_32     186
+#define ADC_31     180
+#define ADC_30     175
+#define ADC_LOW    ADC_30  // When do we start ramping down
 #include "tk-voltage.h"
 
 #define PWM_RAMP_SIZE  8
@@ -73,11 +86,8 @@
 #define MODE_BIKE 3
 #define LAST_NORMAL_MODE_ID MODE_BIKE
 
-#define CONFIGURATION_MODE_ID LAST_NORMAL_MODE_ID + 1
-#define GROUP_SELECT_MODE CONFIGURATION_MODE_ID + 1
-
 #define CONFIG_BLINK_BRIGHTNESS	15 // output to use for blinks on battery check (and other modes) = 10%
-#define CONFIG_BLINK_SPEED		 750 // ms per normal-speed blink
+#define CONFIG_BLINK_SPEED	40 // *4ms=160ms per normal-speed blink
 
 #define TURBO_MINUTES 1 // when turbo timer is enabled, how long before stepping down
 #define TICKS_PER_MINUTE 30 // used for Turbo Timer timing
@@ -85,20 +95,12 @@
 #define ID_TURBO PWM_RAMP_SIZE	// Convenience code for turbo mode (id of 100% mode in pwm ramp)
 
 
-// Calibrate voltage and OTC in this file:
-#include "tk-calibration.h"
-
 /*
  * =========================================================================
  */
 
 // Ignore a spurious warning, we did the cast on purpose
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
-
-#define OWN_DELAY		   // Don't use stock delay functions.
-#define USE_DELAY_MS	 // use _delay_ms()
-#define USE_DELAY_S		 // Also use _delay_s(), not just _delay_ms()
-#include "tk-delay.h"
 
 #define NUM_FP_BYTES 3
 uint8_t fast_presses[NUM_FP_BYTES] __attribute__ ((section (".noinit")));
@@ -145,6 +147,11 @@ inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
 //inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
 //inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
+void _delay_4ms(uint8_t n)  // because it saves a bit of ROM space to do it this way
+{
+    while(n-- > 0) _delay_loop_2(BOGOMIPS*4);
+}
+
 inline uint8_t WeDidAFastPress() {
 	uint8_t i;
 	for(i = 0; i < NUM_FP_BYTES-1; i++) { if(fast_presses[i] != fast_presses[i+1]) return 0;}
@@ -162,9 +169,11 @@ void ResetFastPresses() {
 }
 
 void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
+	uint8_t new_status = actual_mode | (actual_level_id << 2);
+
 	uint8_t oldpos = eepos;
 	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
-	eeprom_write_byte((uint8_t *)(eepos), actual_mode | (actual_level_id << 2));  // save current status
+	eeprom_write_byte((uint8_t *)(eepos), new_status);  // save current status
 	eeprom_write_byte((uint8_t *)(oldpos), 0xff);     // erase old state
 
 	//update config if necessary
@@ -173,7 +182,7 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	}
 }
 
-EMPTY_INTERRUPT(BADISR_vect); //just for case
+//EMPTY_INTERRUPT(BADISR_vect); //just for case - eliminated by custom startup files
 
 ISR(WDT_vect, ISR_NAKED)
 {
@@ -227,15 +236,15 @@ void SetLevel(uint8_t level_id) {
 	SetOutputPwm(pwm_value);
 }
 
-void blink(uint8_t val, uint16_t speed)
+void blink(uint8_t val, uint8_t speed)
 {
 	for (; val > 0; val--)
 	{
 		SetOutputPwm(CONFIG_BLINK_BRIGHTNESS);
-		_delay_ms(speed);
+		_delay_4ms(speed);
 		SetOutputPwm(0);
-		_delay_ms(speed);
-		_delay_ms(speed);
+		_delay_4ms(speed);
+		_delay_4ms(speed);
 	}
 }
 
@@ -269,10 +278,10 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
 	}
 	else if (target_mode == MODE_BIKE) { //bike only uses the default 6 modes (group 0)
 		ReadAndCountPwmLevelsForGroup(0);
-		mc = 6;
+		mc = 5;
 	}
 	else if (target_mode == MODE_BLINKY) {
-		mc = LAST_BLINKY; //for blinky mode - levels are in fact blinkies
+		mc = LAST_BLINKY + 1; //for blinky mode - levels are in fact blinkies
 	}
 
 	return mc;
@@ -302,7 +311,7 @@ inline void NextLevel() {
 inline void NextMode() {
 	// go to next mode
 	actual_mode++;
-	if (actual_mode > LAST_NORMAL_MODE_ID) actual_mode = MODE_NORMAL;
+	if (actual_mode == LAST_NORMAL_MODE_ID + 1) actual_mode = MODE_NORMAL;
 	if (actual_mode == MODE_RAMPING) ramping_trigger = RAMPING_TRIGGER_VALUE_UP;
 	//set_status_mode(actual_mode);
 	//set_status_level_id(0);
@@ -328,9 +337,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
 
-	//ramping_trigger = 0; //just for sure
-	power_reduction = 0; //just for sure
-
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
 		IncrementFastPresses();
@@ -340,13 +346,21 @@ int __attribute__((noreturn,OS_main)) main (void)
 			NextMode();
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
-			_delay_s();	   // wait for user to stop fast-pressing button
-			ResetFastPresses(); // exit this mode after one use
+			// Enter into configuration
+			WDTCR = (1 << WDCE);
+			WDTCR = (1 << WDTIE) | WDTO_8S; //prolong autosave to 2 sec
+			blink(8, 8);
+			_delay_4ms(200);	   // wait for user to stop fast-pressing button
 
-			// TODO -  Enter into configuration
 			config++;
-			if (config > NUM_LEVEL_GROUPS) config = 0;
-			blink(config, 200);
+			if (config == NUM_LEVEL_GROUPS) config = 0;
+			blink(config, 35);
+			_delay_4ms(255);
+
+			wdt_reset();
+			WDTCR = (1 << WDCE);
+			WDTCR = (1 << WDTIE) | WDTO_1S;
+			ResetFastPresses(); // exit this mode after one use
 		}
 		else {
 			NextLevel(); //this includes also changing of blinky modes, because they are taken from list the same way as levels
@@ -362,9 +376,10 @@ int __attribute__((noreturn,OS_main)) main (void)
 	CountNumLevelsForGroupAndMode(actual_mode);
 
     //TURBO ramp down + undervoltage protection
+	power_reduction = 0; //just for sure
+	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 	uint8_t ticks = 0;
 	uint8_t adj_output = 255;
-	uint8_t lowbatt_cnt = 0; //better here because get reseted after every switch press
 
 	for(;;) {
 		if (actual_mode == MODE_BLINKY)
@@ -372,25 +387,25 @@ int __attribute__((noreturn,OS_main)) main (void)
 			if (actual_level_id == BLINKY_STROBE) {
 				for(uint8_t i = 0; i < 7; i++) {
 					SetOutputPwm(255);
-					_delay_ms(10);
+					_delay_4ms(3);
 					SetOutputPwm(0);
 					actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-					_delay_ms(300);
+					_delay_4ms(75);
 				}
 			}
 			else if (actual_level_id == BLINKY_BEACON) {
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetOutputPwm(0);
 				actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-				_delay_s();
-				_delay_s();
+				_delay_4ms(250);
+				_delay_4ms(250);
 			}
 			else if (actual_level_id == BLINKY_BATT_CHECK) {
-				 blink(battcheck(), CONFIG_BLINK_SPEED / 4);
-					actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
-				 _delay_s();
-				 _delay_s();
+				blink(battcheck(), CONFIG_BLINK_SPEED);
+				actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
+				_delay_4ms(250);
+				_delay_4ms(250);
 			}
 		}
 		else if (actual_mode == MODE_RAMPING) {
@@ -400,7 +415,12 @@ int __attribute__((noreturn,OS_main)) main (void)
 				if (actual_level_id == 0) { ramping_trigger = RAMPING_TRIGGER_VALUE_UP;} //handles low end
 			}
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
-			if (ramping_trigger != 0) { _delay_ms(125); } else { _delay_s(); _delay_s(); }
+			if (ramping_trigger != 0) {
+				_delay_4ms(31);
+			} else {
+				_delay_4ms(250);
+				_delay_4ms(250);
+			}
 		}
 		else if (actual_mode == MODE_NORMAL)
 		{
@@ -418,20 +438,20 @@ int __attribute__((noreturn,OS_main)) main (void)
 				SetLevel(actual_level_id);
 			}
 
-			_delay_s();
-			_delay_s();
+			_delay_4ms(250);
+			_delay_4ms(250);
 		}
 		else // Definitely has to be MODE_BIKE
 		{
 				SetLevel(actual_level_id);
-				_delay_s();
-				_delay_s();
+				_delay_4ms(250);
+				_delay_4ms(250);
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetLevel(actual_level_id);
-				_delay_ms(150);
+				_delay_4ms(37);
 				SetOutputPwm(255);
-				_delay_ms(10);
+				_delay_4ms(3);
 				SetLevel(actual_level_id);
 		}
 
@@ -467,7 +487,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 				}
 				//SetOutputPwm(0); cannot be used because it effectively sets variable actual_pwm_output to 0 therefore we cannot revert back original level
 				//TCCR0A = PHASE;
-				PWM_LVL = 0; _delay_ms(1); // blink on step-down
+				PWM_LVL = 0; _delay_4ms(1); // blink on step-down
 				//SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction not needed to refresh here, because it will do itself next round somewhere
 				lowbatt_cnt = 0;
 				//_delay_s(); // Wait before lowering the level again

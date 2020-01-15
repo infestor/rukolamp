@@ -20,8 +20,7 @@
  *
  */
 
-#include "tk-attiny.h"
-#include "tk-calibration.h"
+//#include "tk-attiny.h"
 
 #if defined(TEMPERATURE_MON) || defined(THERMAL_REGULATION)
 #ifdef TEMP_10bit
