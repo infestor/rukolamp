@@ -333,7 +333,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
 	wdt_reset();
-	WDTCR = (1 << WDCE);
+	//WDTCR = (1 << WDCE);
 	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
 
@@ -347,18 +347,18 @@ int __attribute__((noreturn,OS_main)) main (void)
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
 			// Enter into configuration
-			WDTCR = (1 << WDCE);
+			//WDTCR = (1 << WDCE);
 			WDTCR = (1 << WDTIE) | WDTO_8S; //prolong autosave to 2 sec
 			blink(8, 8);
 			_delay_5ms(160);	   // wait for user to stop fast-pressing button
 
 			config++;
 			if (config == NUM_LEVEL_GROUPS) config = 0;
-			blink(config, 35);
+			blink(config + 1, 35);
 			_delay_5ms(250);
 
 			wdt_reset();
-			WDTCR = (1 << WDCE);
+			//WDTCR = (1 << WDCE);
 			WDTCR = (1 << WDTIE) | WDTO_1S;
 			ResetFastPresses(); // exit this mode after one use
 		}
