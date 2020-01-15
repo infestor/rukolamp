@@ -87,7 +87,7 @@
 #define LAST_NORMAL_MODE_ID MODE_BIKE
 
 #define CONFIG_BLINK_BRIGHTNESS	15 // output to use for blinks on battery check (and other modes) = 10%
-#define CONFIG_BLINK_SPEED	40 // *4ms=160ms per normal-speed blink
+#define CONFIG_BLINK_SPEED	30 // *5ms=150ms per normal-speed blink
 
 #define TURBO_MINUTES 1 // when turbo timer is enabled, how long before stepping down
 #define TICKS_PER_MINUTE 30 // used for Turbo Timer timing
@@ -147,9 +147,9 @@ inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
 //inline void set_status_mode(uint8_t new_mode)      { status = (status & 0b11111100) | (new_mode & 0b00000011); }
 //inline void set_status_level_id(uint8_t new_level) { status = (status & 0b11000011) | ((new_level & 0b00001111) << 2); }
 
-void _delay_4ms(uint8_t n)  // because it saves a bit of ROM space to do it this way
+void _delay_5ms(uint8_t n)  // because it saves a bit of ROM space to do it this way
 {
-    while(n-- > 0) _delay_loop_2(BOGOMIPS*4);
+    while(n-- > 0) _delay_loop_2(BOGOMIPS * 5);
 }
 
 inline uint8_t WeDidAFastPress() {
@@ -241,10 +241,10 @@ void blink(uint8_t val, uint8_t speed)
 	for (; val > 0; val--)
 	{
 		SetOutputPwm(CONFIG_BLINK_BRIGHTNESS);
-		_delay_4ms(speed);
+		_delay_5ms(speed);
 		SetOutputPwm(0);
-		_delay_4ms(speed);
-		_delay_4ms(speed);
+		_delay_5ms(speed);
+		_delay_5ms(speed);
 	}
 }
 
@@ -350,12 +350,12 @@ int __attribute__((noreturn,OS_main)) main (void)
 			WDTCR = (1 << WDCE);
 			WDTCR = (1 << WDTIE) | WDTO_8S; //prolong autosave to 2 sec
 			blink(8, 8);
-			_delay_4ms(200);	   // wait for user to stop fast-pressing button
+			_delay_5ms(160);	   // wait for user to stop fast-pressing button
 
 			config++;
 			if (config == NUM_LEVEL_GROUPS) config = 0;
 			blink(config, 35);
-			_delay_4ms(255);
+			_delay_5ms(250);
 
 			wdt_reset();
 			WDTCR = (1 << WDCE);
@@ -387,25 +387,25 @@ int __attribute__((noreturn,OS_main)) main (void)
 			if (actual_level_id == BLINKY_STROBE) {
 				for(uint8_t i = 0; i < 7; i++) {
 					SetOutputPwm(255);
-					_delay_4ms(3);
+					_delay_5ms(2);
 					SetOutputPwm(0);
 					actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-					_delay_4ms(75);
+					_delay_5ms(60);
 				}
 			}
 			else if (actual_level_id == BLINKY_BEACON) {
 				SetOutputPwm(255);
-				_delay_4ms(3);
+				_delay_5ms(2);
 				SetOutputPwm(0);
 				actual_pwm_output = 255; //little hack for un-confuse low voltage protection mechanism
-				_delay_4ms(250);
-				_delay_4ms(250);
+				_delay_5ms(200);
+				_delay_5ms(200);
 			}
 			else if (actual_level_id == BLINKY_BATT_CHECK) {
 				blink(battcheck(), CONFIG_BLINK_SPEED);
 				actual_pwm_output = CONFIG_BLINK_BRIGHTNESS; //little hack for un-confuse low voltage protection mechanism
-				_delay_4ms(250);
-				_delay_4ms(250);
+				_delay_5ms(200);
+				_delay_5ms(200);
 			}
 		}
 		else if (actual_mode == MODE_RAMPING) {
@@ -416,10 +416,10 @@ int __attribute__((noreturn,OS_main)) main (void)
 			}
 			SetOutputPwm(pgm_read_byte(&pwm_fine_ramp_values[actual_level_id]));
 			if (ramping_trigger != 0) {
-				_delay_4ms(31);
+				_delay_5ms(25);
 			} else {
-				_delay_4ms(250);
-				_delay_4ms(250);
+				_delay_5ms(200);
+				_delay_5ms(200);
 			}
 		}
 		else if (actual_mode == MODE_NORMAL)
@@ -438,20 +438,20 @@ int __attribute__((noreturn,OS_main)) main (void)
 				SetLevel(actual_level_id);
 			}
 
-			_delay_4ms(250);
-			_delay_4ms(250);
+			_delay_5ms(200);
+			_delay_5ms(200);
 		}
 		else // Definitely has to be MODE_BIKE
 		{
 				SetLevel(actual_level_id);
-				_delay_4ms(250);
-				_delay_4ms(250);
+				_delay_5ms(200);
+				_delay_5ms(200);
 				SetOutputPwm(255);
-				_delay_4ms(3);
+				_delay_5ms(3);
 				SetLevel(actual_level_id);
-				_delay_4ms(37);
+				_delay_5ms(30);
 				SetOutputPwm(255);
-				_delay_4ms(3);
+				_delay_5ms(3);
 				SetLevel(actual_level_id);
 		}
 
@@ -487,7 +487,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 				}
 				//SetOutputPwm(0); cannot be used because it effectively sets variable actual_pwm_output to 0 therefore we cannot revert back original level
 				//TCCR0A = PHASE;
-				PWM_LVL = 0; _delay_4ms(1); // blink on step-down
+				PWM_LVL = 0; _delay_5ms(1); // blink on step-down
 				//SetOutputPwm(actual_pwm_output); //refresh ouput using new power reduction not needed to refresh here, because it will do itself next round somewhere
 				lowbatt_cnt = 0;
 				//_delay_s(); // Wait before lowering the level again
