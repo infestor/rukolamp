@@ -347,8 +347,9 @@ int __attribute__((noreturn,OS_main)) main (void)
 		}
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
 			// Enter into configuration
+			//prolong temporarily autosave to 8 sec
 			//WDTCR = (1 << WDCE);
-			WDTCR = (1 << WDTIE) | WDTO_8S; //prolong autosave to 2 sec
+			WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
 			blink(8, 8);
 			_delay_5ms(160);	   // wait for user to stop fast-pressing button
 
