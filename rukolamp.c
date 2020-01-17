@@ -174,7 +174,13 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	EEARL = eepos;
 	EECR = (1 << EEMPE) | (0 << EEPM1) | (1 << EEPM0);
 	EECR |= (1 << EEPE);
-	do {} while (EECR & (1 << EEPE));
+	do {} while (EECR & (1 << EEPE));  // wait until erase is finished (1.5ms)
+
+	// Since config will be written wery sporadically, the trick is to read the old value here
+	// before start of write (which takes 1.5ms - because 1.5ms erase was done below separately to save eeprom wear cycles),
+	// then we can compare it and only in case config needs storing, we will wait for finishing of previous write,
+	// which effectively saves us that 1.5ms of waiting because otherways the write of status is done in background
+	uint8_t old_config = eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS);
 
 	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
 	uint8_t new_status = actual_mode | (actual_level_id << 2);
@@ -184,10 +190,10 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	EEDR = new_status;
 	EECR = (1 << EEMPE) |(1 << EEPM1) | (0 << EEPM0);
 	EECR |= (1 << EEPE);
-	do {} while (EECR & (1 << EEPE));
 
 	//update config if necessary
-	if (eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS) != config) {
+	if (old_config != config) {
+		do {} while (EECR & (1 << EEPE)); // wait until previous write is finished (1.5ms)
 		EEARL = CONFIG_EEPROM_ADDRESS;
 		EEDR = config;
 		EECR = (1 << EEMPE) |(1 << EEPM1) | (1 << EEPM0);
