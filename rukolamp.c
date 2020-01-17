@@ -169,16 +169,30 @@ void ResetFastPresses() {
 }
 
 void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
+
+	// erase old state
+	EEARL = eepos;
+	EECR = (1 << EEMPE) | (0 << EEPM1) | (1 << EEPM0);
+	EECR |= (1 << EEPE);
+	do {} while (EECR & (1 << EEPE));
+
+	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
 	uint8_t new_status = actual_mode | (actual_level_id << 2);
 
-	uint8_t oldpos = eepos;
-	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
-	eeprom_write_byte((uint8_t *)(eepos), new_status);  // save current status
-	eeprom_write_byte((uint8_t *)(oldpos), 0xff);     // erase old state
+	// save current status
+	EEARL = eepos;
+	EEDR = new_status;
+	EECR = (1 << EEMPE) |(1 << EEPM1) | (0 << EEPM0);
+	EECR |= (1 << EEPE);
+	do {} while (EECR & (1 << EEPE));
 
 	//update config if necessary
 	if (eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS) != config) {
-		eeprom_write_byte((uint8_t *)CONFIG_EEPROM_ADDRESS, config);
+		EEARL = CONFIG_EEPROM_ADDRESS;
+		EEDR = config;
+		EECR = (1 << EEMPE) |(1 << EEPM1) | (1 << EEPM0);
+		EECR |= (1 << EEPE);
+		//do {} while (EECR & (1 << EEPE)); // no need to wait here since it is last write
 	}
 }
 
@@ -270,7 +284,7 @@ uint8_t ReadAndCountPwmLevelsForGroup(uint8_t target_group)
 }
 
 uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
-	uint8_t mc=0;
+	uint8_t mc = FINE_RAMP_SIZE; // For Ramping mode
 
 	if ((target_mode == MODE_NORMAL)) {
 		//mc = ReadAndCountPwmLevelsForGroup(config_level_group_number());
@@ -289,12 +303,7 @@ uint8_t CountNumLevelsForGroupAndMode(uint8_t target_mode) {
 
 inline void NextLevel() {
 	if (actual_mode != MODE_RAMPING) {
-		uint8_t num_available_levels = CountNumLevelsForGroupAndMode(actual_mode);
 		actual_level_id++;
-		// if we hit the end of list, go to first
-		if (actual_level_id == num_available_levels) {
-			actual_level_id = 0;
-		}
 		ramping_trigger = 0;
 	}
 	else {
@@ -333,7 +342,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
 	wdt_reset();
-	//WDTCR = (1 << WDCE);
+	//WDTCR = (1 << WDCE); // not needed since WDTON fuse is not programmed, timed sequence is not required
 	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
 
@@ -348,7 +357,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
 			// Enter into configuration
 			//prolong temporarily autosave to 8 sec
-			//WDTCR = (1 << WDCE);
 			WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
 			blink(8, 8);
 			_delay_5ms(160);	   // wait for user to stop fast-pressing button
@@ -356,11 +364,10 @@ int __attribute__((noreturn,OS_main)) main (void)
 			config++;
 			if (config == NUM_LEVEL_GROUPS) config = 0;
 			blink(config + 1, 35);
-			_delay_5ms(250);
+			_delay_5ms(255);
 
 			wdt_reset();
-			//WDTCR = (1 << WDCE);
-			WDTCR = (1 << WDTIE) | WDTO_1S;
+			WDTCR = (1 << WDTIE) | WDTO_1S; // revert back to 1 second
 			ResetFastPresses(); // exit this mode after one use
 		}
 		else {
@@ -374,7 +381,11 @@ int __attribute__((noreturn,OS_main)) main (void)
 		RestoreStatusAndConfig(); // Read config values and saved state / or use defaults
 	}
 
-	CountNumLevelsForGroupAndMode(actual_mode);
+	uint8_t num_available_levels = CountNumLevelsForGroupAndMode(actual_mode);
+	// if we hit the end of list, go to first
+	if (actual_level_id == num_available_levels) {
+		actual_level_id = 0;
+	}
 
     //TURBO ramp down + undervoltage protection
 	power_reduction = 0; //just for sure
