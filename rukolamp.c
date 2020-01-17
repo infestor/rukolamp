@@ -35,6 +35,8 @@
 // 6 .. 8 - so far not used
 #define DEFAULTS_CONFIG 0b00000000  // NORMAL mode, 6 levels (level group 0), without memory
 #define CONFIG_EEPROM_ADDRESS EEPSIZE -1
+#define EEPE EEWE //found out, that in avr-libc 1.8 there are different names of these two bits than in datasheet
+#define EEMPE EEMWE
 
 // state memory byte bits usage:
 // used when memory is ON, to save actual state of flashlight - which mode and which level is set
