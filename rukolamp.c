@@ -115,7 +115,7 @@ const uint8_t pwm_fine_ramp_values[] PROGMEM = { FINE_RAMP_VALUES };
 
 #define NUM_LEVEL_GROUPS 8 // Can define up to 16 groups, theoretically the group can have up to 16 level entries
 const uint8_t level_groups[] PROGMEM = {
-	1, 2, 4, 5, 7, 8, 0,
+	1, 2, 3, 4, 6, 8, 0,
 	3, 5, 7, 8, 0,
 	4, 6, 8, 0,
 	1, 0,
