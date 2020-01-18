@@ -34,7 +34,7 @@
 // 5 - memory on/off
 // 6 .. 8 - so far not used
 #define DEFAULTS_CONFIG 0b00000000  // NORMAL mode, 6 levels (level group 0), without memory
-#define CONFIG_EEPROM_ADDRESS EEPSIZE -1
+#define CONFIG_EEPROM_ADDRESS EEPSIZE - 1
 #define EEPE EEWE //found out, that in avr-libc 1.8 there are different names of these two bits than in datasheet
 #define EEMPE EEMWE
 
@@ -170,6 +170,13 @@ void ResetFastPresses() {
 	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
 }
 
+uint8_t __attribute__((noinline)) eeprom_read (uint8_t address)
+{
+	EEARL = address;
+	EECR |= (1 << EERE);
+	return EEDR;
+}
+
 void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
 
 	// erase old state
@@ -182,7 +189,7 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 	// before start of write (which takes 1.5ms - because 1.5ms erase was done below separately to save eeprom wear cycles),
 	// then we can compare it and only in case config needs storing, we will wait for finishing of previous write,
 	// which effectively saves us that 1.5ms of waiting because otherways the write of status is done in background
-	uint8_t old_config = eeprom_read_byte((uint8_t *)CONFIG_EEPROM_ADDRESS);
+	uint8_t old_config = eeprom_read(CONFIG_EEPROM_ADDRESS);
 
 	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
 	uint8_t new_status = actual_mode | (actual_level_id << 2);
@@ -198,7 +205,7 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 		do {} while (EECR & (1 << EEPE)); // wait until previous write is finished (1.5ms)
 		EEARL = CONFIG_EEPROM_ADDRESS;
 		EEDR = config;
-		EECR = (1 << EEMPE) |(1 << EEPM1) | (1 << EEPM0);
+		EECR = (1 << EEMPE) |(0 << EEPM1) | (0 << EEPM0); //stupid me - I put ones here and spent one day debugging why the fuck is it not working properly
 		EECR |= (1 << EEPE);
 		//do {} while (EECR & (1 << EEPE)); // no need to wait here since it is last write
 	}
@@ -210,9 +217,20 @@ ISR(WDT_vect, ISR_NAKED)
 {
 	cli();
 	ResetFastPresses();
+	//This is not clean, but works.
+	//By using ISR_NAKED we save approx. 50bytes of flash, because without that
+	//compiler is saving all between R15..R30 which is crazy.
+	//In disassembly I observed only 3 used registers inside this ISR which need to be restored afterwards.
+	//So I am doing it this way, since I dont know any other more ,,clear" solution to that
+	asm("push r18\n\t"
+	"push r24\n\t"
+	"push r25\n\t"::);
 	//turn off watchog (we already had our 1sec)
 	WDTCR = 0;
 	SaveStatusAndConfig();
+	asm("pop r25\n\t"
+	"pop r24\n\t"
+	"pop r18\n\t"::);
 	__asm__("ret\n\t"); //trick how to leave interrupts turned off after returning from function
 }
 
@@ -225,11 +243,12 @@ inline void RestoreStatusAndConfig() {
 	uint8_t eep;
 	uint8_t first = 1;
 
-	config = eeprom_read_byte((const uint8_t *)CONFIG_EEPROM_ADDRESS);
+	config = eeprom_read(CONFIG_EEPROM_ADDRESS);
+	if (config > 15) config = 0;
 
 	// find the mode index data
 	for(uint8_t i = 0; i < (EEPSIZE / 2); i++) {
-		eep = eeprom_read_byte((const uint8_t *)i);
+		eep = eeprom_read(i);
 		if (eep != 0xff) {
 			eepos = i;
 			status = eep;
@@ -391,7 +410,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	uint8_t num_available_levels = CountNumLevelsForGroupAndMode(actual_mode);
 	// if we hit the end of list, go to first
-	if (actual_level_id == num_available_levels) {
+	if (actual_level_id >= num_available_levels) {
 		actual_level_id = 0;
 	}
 
@@ -492,10 +511,11 @@ int __attribute__((noreturn,OS_main)) main (void)
 			if (lowbatt_cnt >= 2) {  // See if it's been low for a while, and maybe step down
 				//somehow scale the step according to expected level
 				uint8_t decrease_step;
-				if (actual_pwm_output > 200) { decrease_step = 10; }
-				else if (actual_pwm_output > 150) { decrease_step = 7; }
-				else if (actual_pwm_output > 100) { decrease_step = 5; }
-				else if (actual_pwm_output > 50) { decrease_step = 3; }
+				uint8_t real_output = actual_pwm_output - power_reduction;
+				if (real_output > 200) { decrease_step = 10; }
+				else if (real_output > 150) { decrease_step = 7; }
+				else if (real_output > 100) { decrease_step = 5; }
+				else if (real_output > 50) { decrease_step = 3; }
 				else { decrease_step = 1; }
 
 				power_reduction += decrease_step;

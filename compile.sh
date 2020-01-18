@@ -5,7 +5,7 @@ MCU=attiny13a
 
 CFLAGS="-Wall -W"
 #CLAGS+=" -pedantic"
-CFLAGS+=" -g3 -gdwarf-2"
+CFLAGS+=" -g3 -gdwarf-2 -gstrict-dwarf"
 CFLAGS+=" -DF_CPU=4800000UL -Os"
 CFLAGS+=" -ffreestanding"
 #CFLAGS+=" -mshort-calls"
