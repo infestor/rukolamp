@@ -138,6 +138,7 @@ register uint8_t status asm("r7");
 register int8_t ramping_trigger asm("r8");
 register uint8_t power_reduction asm("r9");
 register uint8_t eepos asm("r10");
+register uint8_t watchdog_counter asm("r11");
 
 // =========================================================================
 
@@ -179,26 +180,29 @@ uint8_t __attribute__((noinline)) eeprom_read (uint8_t address)
 
 void SaveStatusAndConfig() {  // save the current mode index (with wear leveling)
 
-	// erase old state
-	EEARL = eepos;
-	EECR = (1 << EEMPE) | (0 << EEPM1) | (1 << EEPM0);
-	EECR |= (1 << EEPE);
-	do {} while (EECR & (1 << EEPE));  // wait until erase is finished (1.5ms)
-
 	// Since config will be written wery sporadically, the trick is to read the old value here
 	// before start of write (which takes 1.5ms - because 1.5ms erase was done below separately to save eeprom wear cycles),
 	// then we can compare it and only in case config needs storing, we will wait for finishing of previous write,
 	// which effectively saves us that 1.5ms of waiting because otherways the write of status is done in background
 	uint8_t old_config = eeprom_read(CONFIG_EEPROM_ADDRESS);
 
-	eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
 	uint8_t new_status = actual_mode | (actual_level_id << 2);
 
-	// save current status
-	EEARL = eepos;
-	EEDR = new_status;
-	EECR = (1 << EEMPE) |(1 << EEPM1) | (0 << EEPM0);
-	EECR |= (1 << EEPE);
+	if (new_status != status) {
+		// erase old state
+		EEARL = eepos;
+		EECR = (1 << EEMPE) | (0 << EEPM1) | (1 << EEPM0);
+		EECR |= (1 << EEPE);
+		do {} while (EECR & (1 << EEPE));  // wait until erase is finished (1.5ms)
+
+		eepos = (eepos + 1) & ((EEPSIZE / 2) - 1);  // wear leveling, use next cell
+
+		// save current status
+		EEARL = eepos;
+		EEDR = new_status;
+		EECR = (1 << EEMPE) |(1 << EEPM1) | (0 << EEPM0);
+		EECR |= (1 << EEPE);
+	}
 
 	//update config if necessary
 	if (old_config != config) {
@@ -215,8 +219,6 @@ void SaveStatusAndConfig() {  // save the current mode index (with wear leveling
 
 ISR(WDT_vect, ISR_NAKED)
 {
-	cli();
-	ResetFastPresses();
 	//This is not clean, but works.
 	//By using ISR_NAKED we save approx. 50bytes of flash, because without that
 	//compiler is saving all between R15..R30 which is crazy.
@@ -225,13 +227,24 @@ ISR(WDT_vect, ISR_NAKED)
 	asm("push r18\n\t"
 	"push r24\n\t"
 	"push r25\n\t"::);
-	//turn off watchog (we already had our 1sec)
-	WDTCR = 0;
-	SaveStatusAndConfig();
+
+	ResetFastPresses();
+
+	if (watchdog_counter) {
+		//turn off watchog (we already had our 2sec - second passthrough this ISR)
+		//cli(); //not needed here, already turned off by entering ISR
+		WDTCR = 0;
+		SaveStatusAndConfig();
+	}
+	else {
+		sei(); //this was 1st passthrough (1 second), we need also 2nd so activate interrupts for one more time
+	}
+
+	watchdog_counter++;
 	asm("pop r25\n\t"
 	"pop r24\n\t"
 	"pop r18\n\t"::);
-	__asm__("ret\n\t"); //trick how to leave interrupts turned off after returning from function
+	__asm__("ret\n\t"); //trick how to leave interrupts turned off after returning from function when we want it
 }
 
 inline void FirstBootState() {
@@ -244,7 +257,7 @@ inline void RestoreStatusAndConfig() {
 	uint8_t first = 1;
 
 	config = eeprom_read(CONFIG_EEPROM_ADDRESS);
-	if (config > 15) config = 0;
+	if (config > NUM_LEVEL_GROUPS - 1) config = 0;
 
 	// find the mode index data
 	for(uint8_t i = 0; i < (EEPSIZE / 2); i++) {
@@ -349,11 +362,8 @@ inline void NextMode() {
 	actual_mode++;
 	if (actual_mode == LAST_NORMAL_MODE_ID + 1) actual_mode = MODE_NORMAL;
 	if (actual_mode == MODE_RAMPING) ramping_trigger = RAMPING_TRIGGER_VALUE_UP;
-	//set_status_mode(actual_mode);
-	//set_status_level_id(0);
 	actual_level_id = 0;
-	// Since we start on each mode always on level_id 0, we dont need to know real number of levels here. But just in NextMode() function
-	// But we need the levels :(
+	// Since we start on each mode always on level_id 0, we dont need to know real number of levels here
 }
 
 // =========================================================================
@@ -372,6 +382,8 @@ int __attribute__((noreturn,OS_main)) main (void)
 	//WDTCR = (1 << WDCE); // not needed since WDTON fuse is not programmed, timed sequence is not required
 	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
 	sei();
+	watchdog_counter = 0;
+	//asm("ldi r11, 0x02\n\t"::);
 
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
