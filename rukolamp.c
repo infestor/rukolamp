@@ -16,9 +16,6 @@
 #define EEPSIZE 64
 #define V_REF REFS0
 #define BOGOMIPS 950
-#define STAR2_PIN   PB0
-#define STAR3_PIN   PB4
-#define STAR4_PIN   PB3
 #define PWM_PIN     PB1
 #define VOLTAGE_PIN PB2
 #define ADC_CHANNEL 0x01    // MUX 01 corresponds with PB2
@@ -360,7 +357,8 @@ inline void NextLevel() {
 inline void NextMode() {
 	// go to next mode
 	actual_mode++;
-	if (actual_mode == LAST_NORMAL_MODE_ID + 1) actual_mode = MODE_NORMAL;
+	//if (actual_mode == LAST_NORMAL_MODE_ID + 1) actual_mode = MODE_NORMAL;
+	actual_mode &= LAST_NORMAL_MODE_ID; //saves 4bytes, only can be used for power of 2 minuse 1 numbers
 	if (actual_mode == MODE_RAMPING) ramping_trigger = RAMPING_TRIGGER_VALUE_UP;
 	actual_level_id = 0;
 	// Since we start on each mode always on level_id 0, we dont need to know real number of levels here
@@ -377,14 +375,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 
 	ADC_on();
 
-	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
-	wdt_reset();
-	//WDTCR = (1 << WDCE); // not needed since WDTON fuse is not programmed, timed sequence is not required
-	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
-	sei();
-	watchdog_counter = 0;
-	//asm("ldi r11, 0x02\n\t"::);
-
 	// check button press time, unless we're in group selection mode
 	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
 		IncrementFastPresses();
@@ -396,7 +386,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
 			// Enter into configuration
 			//prolong temporarily autosave to 8 sec
-			WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
+			//WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
 			blink(8, 8);
 			_delay_5ms(160);	   // wait for user to stop fast-pressing button
 
@@ -405,8 +395,8 @@ int __attribute__((noreturn,OS_main)) main (void)
 			blink(config + 1, 35);
 			_delay_5ms(255);
 
-			wdt_reset();
-			WDTCR = (1 << WDTIE) | WDTO_1S; // revert back to 1 second
+			//wdt_reset();
+			//WDTCR = (1 << WDTIE) | WDTO_1S; // revert back to 1 second
 			ResetFastPresses(); // exit this mode after one use
 		}
 		else {
@@ -425,6 +415,14 @@ int __attribute__((noreturn,OS_main)) main (void)
 	if (actual_level_id >= num_available_levels) {
 		actual_level_id = 0;
 	}
+
+	//Watchdog start moved here (from start of main() so we dont have to bother with its non wanted timeout during config mode)
+	//start watchdog to measure one second from start to be able to clear fast presses independetly from main loop where sleeps and other stuff happens
+	wdt_reset();
+	//WDTCR = (1 << WDCE); // not needed since WDTON fuse is not programmed, timed sequence is not required
+	WDTCR = (1 << WDTIE) | WDTO_1S; //1sec timeout
+	sei();
+	watchdog_counter = 0;
 
     //TURBO ramp down + undervoltage protection
 	power_reduction = 0; //just for sure
