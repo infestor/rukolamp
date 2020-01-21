@@ -17,9 +17,12 @@
 #define V_REF REFS0
 #define BOGOMIPS 950
 #define PWM_PIN     PB1
+#define OTC_PIN		PB4
 #define VOLTAGE_PIN PB2
 #define ADC_CHANNEL 0x01    // MUX 01 corresponds with PB2
 #define ADC_DIDR    ADC1D   // Digital input disable bit corresponding with PB2
+#define OTC_CHANNEL 0b00000010   // MUX 10 corresponds with PB4
+#define OTC_DIDR	ADC2D	// Digital input disable bit corresponding with PB4
 #define ADC_PRSCL   0x05    // clk/32 (makes it 150kHz)
 #define PWM_LVL     OCR0B   // OCR0B is the output compare register for PB1
 
@@ -61,6 +64,8 @@
 #define ADC_31     180
 #define ADC_30     175
 #define ADC_LOW    ADC_30  // When do we start ramping down
+#define OTC_SHORT 	190 //max 0.5s short-press, values counted for 1uF capacitor
+#define OTC_MED		94  //max 1.5s medium-press
 #include "tk-voltage.h"
 
 #define PWM_RAMP_SIZE  8
@@ -101,8 +106,8 @@
 // Ignore a spurious warning, we did the cast on purpose
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
 
-#define NUM_FP_BYTES 3
-uint8_t fast_presses[NUM_FP_BYTES] __attribute__ ((section (".noinit")));
+//#define NUM_FP_BYTES 3
+//uint8_t fast_presses[NUM_FP_BYTES] __attribute__ ((section (".noinit")));
 
 // Blinky modes, first and last entry must correspond with FIRST_BLINKY and LAST_BLINKY
 //const uint8_t blinky_mode_list[] PROGMEM = { BLINKY_BATT_CHECK, BLINKY_STROBE, BLINKY_BEACON };
@@ -127,6 +132,7 @@ const uint8_t level_groups[] PROGMEM = {
 #define LONGEST_LEVEL_GROUP 6 // dont forget to update if editing groups
 uint8_t level_group_values[LONGEST_LEVEL_GROUP] __attribute__ ((section (".noinit")));
 
+register uint8_t fast_presses asm("r2");
 register uint8_t actual_level_id asm("r3");
 register uint8_t actual_mode asm("r4");
 register uint8_t actual_pwm_output asm("r5");
@@ -150,22 +156,6 @@ inline uint8_t status_level_id() { return (status >> 2) & 0b00001111; }
 void _delay_5ms(uint8_t n)  // because it saves a bit of ROM space to do it this way
 {
     while(n-- > 0) _delay_loop_2(BOGOMIPS * 5);
-}
-
-inline uint8_t WeDidAFastPress() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES-1; i++) { if(fast_presses[i] != fast_presses[i+1]) return 0;}
-	return 1;
-}
-
-inline void IncrementFastPresses() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i]++; }
-}
-
-void ResetFastPresses() {
-	uint8_t i;
-	for(i = 0; i < NUM_FP_BYTES; i++) { fast_presses[i] = 0; }
 }
 
 uint8_t __attribute__((noinline)) eeprom_read (uint8_t address)
@@ -225,7 +215,7 @@ ISR(WDT_vect, ISR_NAKED)
 	"push r24\n\t"
 	"push r25\n\t"::);
 
-	ResetFastPresses();
+	fast_presses = 0;
 
 	if (watchdog_counter) {
 		//turn off watchog (we already had our 2sec - second passthrough this ISR)
@@ -368,43 +358,45 @@ inline void NextMode() {
 
 int __attribute__((noreturn,OS_main)) main (void)
 {
+	ADC_on();
+	while (ADCSRA & (1 << ADSC)); //wait for completion, but first measurement is unreliable
+	uint8_t otc_voltage = read_adc_8bit(); //Second measurement is acceptable
+	ADMUX  = (1 << V_REF) | (1 << ADLAR) | ADC_CHANNEL; //now set mux to undervoltage protection measurement on PB1
 
-	DDRB |= (1 << PWM_PIN);	 // Set PWM pin to output, enable main channel
+	DDRB = (1 << PWM_PIN) | (1 << OTC_PIN);	 // Set PWM pin to output, enable main channel. Set OTC pin to output
 	TCCR0A = FAST; // Set timer to do PWM for correct output pin and set prescaler timing
 	TCCR0B = 0x01; // Set timer to do PWM for correct output pin and set prescaler timing
+    PORTB |= (1 << OTC_PIN);    // Charge up the capacitor by setting OTC_PIN to output
 
-	ADC_on();
+	// check button press time
+	if ( otc_voltage >  OTC_SHORT ) { // sram hasn't decayed yet, must have been a short press
+		asm("inc r2\n\t"::); //fast_presses++; Using INC saves 4 bytes, don know why.
 
-	// check button press time, unless we're in group selection mode
-	if ( WeDidAFastPress() ) { // sram hasn't decayed yet, must have been a short press
-		IncrementFastPresses();
+		if (fast_presses >= 10) {  // Config mode if 10 or more fast presses
+					// Enter into configuration
+					//prolong temporarily autosave to 8 sec
+					//WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
+					blink(8, 8);
+					_delay_5ms(160);	   // wait for user to stop fast-pressing button
 
-		// triple-tap from a solid mode
-		if(fast_presses[0] == 5) {
-			NextMode();
-		}
-		else if (fast_presses[0] >= 10) {  // Config mode if 10 or more fast presses
-			// Enter into configuration
-			//prolong temporarily autosave to 8 sec
-			//WDTCR = (1 << WDTIE) | (1 << WDP3) | (1 << WDP0); // Hard lesson learned - constant from avr-libc WDTO_8S is not correct!! So I had to make it myself
-			blink(8, 8);
-			_delay_5ms(160);	   // wait for user to stop fast-pressing button
+					config++;
+					if (config == NUM_LEVEL_GROUPS) config = 0;
+					blink(config + 1, 35);
+					_delay_5ms(255);
 
-			config++;
-			if (config == NUM_LEVEL_GROUPS) config = 0;
-			blink(config + 1, 35);
-			_delay_5ms(255);
-
-			//wdt_reset();
-			//WDTCR = (1 << WDTIE) | WDTO_1S; // revert back to 1 second
-			ResetFastPresses(); // exit this mode after one use
-		}
+					//wdt_reset();
+					//WDTCR = (1 << WDTIE) | WDTO_1S; // revert back to 1 second
+					fast_presses = 0; // exit this mode after one use
+				}
 		else {
 			NextLevel(); //this includes also changing of blinky modes, because they are taken from list the same way as levels
 		}
 	}
+	else if ( otc_voltage > OTC_MED ) { //medium press
+		NextMode();
+	}
 	else { // Long press / power on after long off. Definitely means reset
-		ResetFastPresses();
+		fast_presses = 0;
 
 		// Does not necessarily have to be used now because we have not implemented saving to memory at all so all is defaultly on 0 anyway
 		RestoreStatusAndConfig(); // Read config values and saved state / or use defaults
@@ -505,8 +497,6 @@ int __attribute__((noreturn,OS_main)) main (void)
 		}
 
 		// INFO: Need to keep all modes branch ifs (beacon, etc) to run approx 2sec, to properly work undervoltage reduction cycle speed
-
-		//ResetFastPresses(); // Probably already cleared by interrupt from watchdog, i think I will remove it from this location
 
 		// Battery undervoltage protection
 		if (ADCSRA & (1 << ADIF)) {  // if a voltage reading is ready
