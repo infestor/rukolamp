@@ -362,6 +362,7 @@ int __attribute__((noreturn,OS_main)) main (void)
 	while (ADCSRA & (1 << ADSC)); //wait for completion, but first measurement is unreliable
 	uint8_t otc_voltage = read_adc_8bit(); //Second measurement is acceptable
 	ADMUX  = (1 << V_REF) | (1 << ADLAR) | ADC_CHANNEL; //now set mux to undervoltage protection measurement on PB1
+	ADCSRA |= (1 << ADSC); //And start measurement for future usage
 
 	DDRB = (1 << PWM_PIN) | (1 << OTC_PIN);	 // Set PWM pin to output, enable main channel. Set OTC pin to output
 	TCCR0A = FAST; // Set timer to do PWM for correct output pin and set prescaler timing
